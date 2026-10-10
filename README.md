@@ -387,8 +387,9 @@ Conviene correr **un solo** servicio de inventario mientras se prueba: las prueb
 ## Despliegue
 
 La API se despliega en ECS Fargate con un Application Load Balancer, ECR y Terraform. La base de datos y
-las siete colas SQS deben existir en la misma región y VPC predeterminada. ECS añade una regla PostgreSQL
-a la security group de RDS; las credenciales SQS salen del rol de la tarea y la contraseña de PostgreSQL
+las siete colas SQS deben existir en la misma región. ECS y el ALB usan la VPC de RDS y sus subnets públicas
+en al menos dos zonas de disponibilidad. ECS añade una regla PostgreSQL a la security group de RDS; las
+credenciales SQS salen del rol de la tarea y la contraseña de PostgreSQL
 se lee desde Secrets Manager.
 
 ### Preparar AWS y GitHub
@@ -402,9 +403,10 @@ AWS_REGION=us-east-1 bash scripts/bootstrap-github-deploy.sh OWNER/REPO
 ```
 
 El script crea el bucket S3 versionado y cifrado, el proveedor OIDC y el rol de Actions con confianza
-para cualquier rama de ese repo. Te pide la configuración de RDS/UI/agente y carga todas las variables
-que consume el workflow. Si no proporcionas el ARN de un secreto existente, pide la contraseña sin
-mostrarla y la guarda en Secrets Manager. Para usar el repo GitHub actual, omite `OWNER/REPO`.
+para pushes y ejecuciones manuales en cualquier rama de ese repo. Usa el subject OIDC inmutable de
+GitHub (IDs de owner y repo). Te pide la configuración de RDS/UI/agente y carga todas las variables que
+consume el workflow. Si no proporcionas el ARN de un secreto existente, pide la contraseña sin mostrarla
+y la guarda en Secrets Manager. Para usar el repo GitHub actual, omite `OWNER/REPO`.
 
 ### Desplegar
 

@@ -35,6 +35,11 @@ gh auth status >/dev/null
 
 repo="${1:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 [[ "$repo" == */* ]] || usage
+repo_owner="${repo%%/*}"
+repo_name="${repo#*/}"
+repo_ids="$(gh api "repos/$repo" --jq '{owner_id: .owner.id, repo_id: .id}')"
+owner_id="$(jq -r '.owner_id' <<<"$repo_ids")"
+repo_id="$(jq -r '.repo_id' <<<"$repo_ids")"
 
 region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 account_id="$(aws sts get-caller-identity --query Account --output text)"
@@ -64,15 +69,16 @@ if ! jq -e 'index("sts.amazonaws.com") != null' <<<"$client_ids" >/dev/null; the
     --client-id sts.amazonaws.com
 fi
 
-trust_policy="$(jq -n --arg repo "$repo" '{
+branch_subject="repo:${repo_owner}@${owner_id}/${repo_name}@${repo_id}:ref:refs/heads/*"
+trust_policy="$(jq -n --arg provider_arn "$provider_arn" --arg subject "$branch_subject" '{
   Version: "2012-10-17",
   Statement: [{
     Effect: "Allow",
-    Principal: { Federated: "'"$provider_arn"'" },
+    Principal: { Federated: $provider_arn },
     Action: "sts:AssumeRoleWithWebIdentity",
     Condition: {
       StringEquals: { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-      StringLike: { "token.actions.githubusercontent.com:sub": ("repo:" + $repo + ":*") }
+      StringLike: { "token.actions.githubusercontent.com:sub": $subject }
     }
   }]
 }')"
@@ -104,7 +110,7 @@ policy="$(jq -n --arg partition "$partition" --arg account "$account_id" --arg r
     {
       Sid: "ECRRepository",
       Effect: "Allow",
-      Action: ["ecr:CreateRepository", "ecr:DescribeRepositories", "ecr:PutImageTagMutability", "ecr:PutImageScanningConfiguration", "ecr:TagResource", "ecr:UntagResource", "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"],
+      Action: ["ecr:CreateRepository", "ecr:DeleteRepository", "ecr:DescribeRepositories", "ecr:ListTagsForResource", "ecr:PutImageTagMutability", "ecr:PutImageScanningConfiguration", "ecr:TagResource", "ecr:UntagResource", "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"],
       Resource: ("arn:" + $partition + ":ecr:" + $region + ":" + $account + ":repository/hack-saltillo-api")
     },
     {
@@ -116,12 +122,12 @@ policy="$(jq -n --arg partition "$partition" --arg account "$account_id" --arg r
     {
       Sid: "NetworkingAndQueues",
       Effect: "Allow",
-      Action: ["ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeAvailabilityZones", "ec2:DescribeTags", "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:CreateTags", "ec2:DeleteTags"],
+      Action: ["ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeAvailabilityZones", "ec2:DescribeInternetGateways", "ec2:DescribeAccountAttributes", "ec2:DescribeTags", "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress", "ec2:CreateTags", "ec2:DeleteTags"],
       Resource: "*"
     },
     {
       Effect: "Allow",
-      Action: ["sqs:GetQueueUrl", "sqs:GetQueueAttributes"],
+      Action: ["sqs:GetQueueUrl", "sqs:GetQueueAttributes", "sqs:ListQueueTags"],
       Resource: ("arn:" + $partition + ":sqs:" + $region + ":" + $account + ":inventory-broker-*")
     },
     {

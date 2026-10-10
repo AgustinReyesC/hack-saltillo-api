@@ -15,14 +15,23 @@ provider "aws" {
   region = var.aws_region
 }
 
-data "aws_vpc" "default" {
-  default = true
+data "aws_security_group" "database" {
+  id = var.database_security_group_id
 }
 
-data "aws_subnets" "default" {
+data "aws_vpc" "api" {
+  id = data.aws_security_group.database.vpc_id
+}
+
+data "aws_subnets" "public" {
   filter {
     name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+    values = [data.aws_vpc.api.id]
+  }
+
+  filter {
+    name   = "map-public-ip-on-launch"
+    values = ["true"]
   }
 }
 
@@ -146,7 +155,7 @@ resource "aws_iam_role_policy" "task_sqs" {
 resource "aws_security_group" "load_balancer" {
   name        = "${local.name}-alb"
   description = "Public HTTP access to the API load balancer"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = data.aws_vpc.api.id
 
   ingress {
     description = "HTTP"
@@ -167,7 +176,7 @@ resource "aws_security_group" "load_balancer" {
 resource "aws_security_group" "task" {
   name        = "${local.name}-task"
   description = "API tasks accept traffic only from the load balancer"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = data.aws_vpc.api.id
 
   ingress {
     from_port       = 8000
@@ -198,7 +207,7 @@ resource "aws_lb" "api" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.load_balancer.id]
-  subnets            = data.aws_subnets.default.ids
+  subnets            = data.aws_subnets.public.ids
 }
 
 resource "aws_lb_target_group" "api" {
@@ -206,7 +215,7 @@ resource "aws_lb_target_group" "api" {
   port        = 8000
   protocol    = "HTTP"
   target_type = "ip"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = data.aws_vpc.api.id
 
   health_check {
     path                = "/health"
@@ -288,7 +297,7 @@ resource "aws_ecs_service" "api" {
   }
 
   network_configuration {
-    subnets          = data.aws_subnets.default.ids
+    subnets          = data.aws_subnets.public.ids
     security_groups  = [aws_security_group.task.id]
     assign_public_ip = true
   }
