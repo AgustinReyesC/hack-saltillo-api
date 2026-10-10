@@ -237,15 +237,15 @@ orden por llave: el `key` del evento viaja como `MessageGroupId` y el `event_id`
 `MessageDeduplicationId`. La deduplicación basada en contenido está desactivada, así que cada envío lleva
 su `MessageDeduplicationId`.
 
-| Cola | Dirección | Eventos | `key` |
-|---|---|---|---|
-| `inventory-broker-shop-catalog.fifo` | entrada | `part.upserted`, `location.upserted`, `bom.upserted` | `part:305`, `location:14`, `model:4` |
-| `inventory-broker-shop-work-orders.fifo` | entrada | `work_order.opened`, `.stage_changed`, `.deleted` | código de orden (`R061026012`) |
-| `inventory-broker-shop-inspections.fifo` | entrada | `inspection.submitted`, `.approved`, `.rejected`, `.discarded`, `.voided` | código de orden |
-| `inventory-broker-shop-purchasing.fifo` | entrada | `purchase.item_received` | `PR-` + `request_number` |
-| `inventory-broker-notifications.fifo` | entrada | Eventos que genera el mensaje del usuario al agente; la API decide según su `event_type` | |
-| `inventory-broker-inventory-events.fifo` | salida | `stock.*` | ver [Eventos de salida](#eventos-de-salida) |
-| `inventory-broker-inventory-dlq.fifo` | salida | Evento original que no se pudo procesar | la del original |
+| Cola                                     | Dirección | Eventos                                                                                  | `key`                                       |
+| ---------------------------------------- | --------- | ---------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `inventory-broker-shop-catalog.fifo`     | entrada   | `part.upserted`, `location.upserted`, `bom.upserted`                                     | `part:305`, `location:14`, `model:4`        |
+| `inventory-broker-shop-work-orders.fifo` | entrada   | `work_order.opened`, `.stage_changed`, `.deleted`                                        | código de orden (`R061026012`)              |
+| `inventory-broker-shop-inspections.fifo` | entrada   | `inspection.submitted`, `.approved`, `.rejected`, `.discarded`, `.voided`                | código de orden                             |
+| `inventory-broker-shop-purchasing.fifo`  | entrada   | `purchase.item_received`                                                                 | `PR-` + `request_number`                    |
+| `inventory-broker-notifications.fifo`    | entrada   | Eventos que genera el mensaje del usuario al agente; la API decide según su `event_type` |                                             |
+| `inventory-broker-inventory-events.fifo` | salida    | `stock.*`                                                                                | ver [Eventos de salida](#eventos-de-salida) |
+| `inventory-broker-inventory-dlq.fifo`    | salida    | Evento original que no se pudo procesar                                                  | la del original                             |
 
 La API consume solo las colas de entrada. Las de salida son para otros consumidores: en SQS cada mensaje
 lo recibe un solo consumidor.
@@ -264,8 +264,15 @@ Garantías con las que está diseñada la API:
 Todos los eventos usan el mismo sobre:
 
 ```json
-{ "event_id": "uuid", "event_type": "inspection.approved", "event_version": 1,
-  "occurred_at": "2026-10-06T16:42:11Z", "source": "shop-floor", "key": "R061026012", "data": {} }
+{
+  "event_id": "uuid",
+  "event_type": "inspection.approved",
+  "event_version": 1,
+  "occurred_at": "2026-10-06T16:42:11Z",
+  "source": "shop-floor",
+  "key": "R061026012",
+  "data": {}
+}
 ```
 
 El consumidor (`src/ingest/sqs-consumer.ts`) hace *long polling* a cada cola de entrada y le pasa cada mensaje
@@ -303,19 +310,19 @@ con los estantes que crean las pruebas de contrato (`U-0xx`) sobre el catálogo 
 
 ### Qué escribe cada evento
 
-| Evento | Escribe |
-|---|---|
-| `part.upserted` | `unit` y `part`. |
-| `location.upserted` | `location`. |
-| `bom.upserted` | `model` y `model_line`. Las líneas que ya no vienen pasan a `active = FALSE`. |
-| `work_order.opened` | `work_order`. No pisa `stage` ni `deleted` si ya existía. |
-| `work_order.stage_changed` | `work_order.stage` y `work_order_stage`. |
-| `work_order.deleted` | `work_order.deleted`; libera reservas y cierra faltantes. |
-| `inspection.submitted` | `inspection` e `inspection_item`. No mueve inventario. |
-| `inspection.approved` | Lo anterior, más la necesidad: reservas, faltantes y sugerencias. Es la única que genera necesidad. |
-| `inspection.rejected` / `.discarded` | `inspection.status`. |
-| `inspection.voided` | `inspection.status`; libera reservas y cierra faltantes de esa inspección. |
-| `purchase.item_received` | `purchase_request` y `purchase_line`; si es `restock`, entrada de inventario. |
+| Evento                               | Escribe                                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `part.upserted`                      | `unit` y `part`.                                                                                    |
+| `location.upserted`                  | `location`.                                                                                         |
+| `bom.upserted`                       | `model` y `model_line`. Las líneas que ya no vienen pasan a `active = FALSE`.                       |
+| `work_order.opened`                  | `work_order`. No pisa `stage` ni `deleted` si ya existía.                                           |
+| `work_order.stage_changed`           | `work_order.stage` y `work_order_stage`.                                                            |
+| `work_order.deleted`                 | `work_order.deleted`; libera reservas y cierra faltantes.                                           |
+| `inspection.submitted`               | `inspection` e `inspection_item`. No mueve inventario.                                              |
+| `inspection.approved`                | Lo anterior, más la necesidad: reservas, faltantes y sugerencias. Es la única que genera necesidad. |
+| `inspection.rejected` / `.discarded` | `inspection.status`.                                                                                |
+| `inspection.voided`                  | `inspection.status`; libera reservas y cierra faltantes de esa inspección.                          |
+| `purchase.item_received`             | `purchase_request` y `purchase_line`; si es `restock`, entrada de inventario.                       |
 
 ### Reglas de negocio
 
@@ -357,34 +364,34 @@ Mismo sobre, con `source = "inventory"`, `event_version = 1` y un `event_id` nue
 los envía a `inventory-broker-inventory-events.fifo` con la llave como `MessageGroupId` y el `event_id` como
 `MessageDeduplicationId` (entrega al menos una vez).
 
-| Evento | `key` | Cuándo |
-|---|---|---|
-| `stock.received` | `part:<part_id>` | Entrada en `U-100`, o al resolver una recepción. |
-| `stock.unmatched_receipt` | `purchase_line:<line_id>` | Compra `restock` sin pieza única. |
-| `stock.reserved` | código de orden | Por cada reserva, también al surtir un faltante. |
-| `stock.shortage_detected` | código de orden | Nace o cambia un faltante. |
-| `stock.shortage_resolved` | código de orden | Una entrada surte un faltante. |
-| `stock.issued` | código de orden | `POST /issues`. |
-| `stock.transferred` | `part:<part_id>` | `POST /transfers`. |
-| `stock.adjusted` | `part:<part_id>` | Una por línea con diferencia en `POST /counts`. |
-| `stock.reorder_suggested` | `part:<part_id>` | Nace o cambia la sugerencia. |
+| Evento                    | `key`                     | Cuándo                                           |
+| ------------------------- | ------------------------- | ------------------------------------------------ |
+| `stock.received`          | `part:<part_id>`          | Entrada en `U-100`, o al resolver una recepción. |
+| `stock.unmatched_receipt` | `purchase_line:<line_id>` | Compra `restock` sin pieza única.                |
+| `stock.reserved`          | código de orden           | Por cada reserva, también al surtir un faltante. |
+| `stock.shortage_detected` | código de orden           | Nace o cambia un faltante.                       |
+| `stock.shortage_resolved` | código de orden           | Una entrada surte un faltante.                   |
+| `stock.issued`            | código de orden           | `POST /issues`.                                  |
+| `stock.transferred`       | `part:<part_id>`          | `POST /transfers`.                               |
+| `stock.adjusted`          | `part:<part_id>`          | Una por línea con diferencia en `POST /counts`.  |
+| `stock.reorder_suggested` | `part:<part_id>`          | Nace o cambia la sugerencia.                     |
 
 ## Rutas HTTP
 
 ### Contrato
 
-| Método y ruta | Respuesta | Descripción |
-|---|---|---|
-| `GET /parts/{part_id}/availability` | 200 / 404 | Existencia total y por ubicación (`on_hand`, `reserved`, `available`). |
-| `GET /parts/{part_id}/ledger` | 200 / 404 | Kardex: movimientos con el saldo después de cada uno. |
-| `GET /work-orders/{code}/materials` | 200 / 404 | Por línea de la orden: `required`, `reserved`, `issued`, `missing`. |
-| `GET /shortages?work_order_code=&part_id=` | 200 | Faltantes abiertos. |
-| `GET /reorder-suggestions` | 200 | Sugerencias de reabasto. |
-| `GET /unmatched-receipts` | 200 | Recepciones sin relacionar. |
-| `POST /unmatched-receipts/{id}/resolve` | 200 / 404 / 409 | Relaciona una recepción con una pieza (`{part_id, location_id?}`). 409 si ya estaba resuelta. |
-| `POST /issues` | 201 / 404 / 409 | Salida de material (`{work_order_code, part_id, location_id, quantity, issued_by}`). 409 si no alcanza. |
-| `POST /transfers` | 201 / 404 / 409 / 422 | Transferencia entre ubicaciones. Origen igual a destino da 422. |
-| `POST /counts` | 201 / 404 / 422 | Conteo físico (`{location_id, reason, lines:[{part_id, counted_quantity}]}`). Sin `reason` da 422. |
+| Método y ruta                              | Respuesta             | Descripción                                                                                             |
+| ------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET /parts/{part_id}/availability`        | 200 / 404             | Existencia total y por ubicación (`on_hand`, `reserved`, `available`).                                  |
+| `GET /parts/{part_id}/ledger`              | 200 / 404             | Kardex: movimientos con el saldo después de cada uno.                                                   |
+| `GET /work-orders/{code}/materials`        | 200 / 404             | Por línea de la orden: `required`, `reserved`, `issued`, `missing`.                                     |
+| `GET /shortages?work_order_code=&part_id=` | 200                   | Faltantes abiertos.                                                                                     |
+| `GET /reorder-suggestions`                 | 200                   | Sugerencias de reabasto.                                                                                |
+| `GET /unmatched-receipts`                  | 200                   | Recepciones sin relacionar.                                                                             |
+| `POST /unmatched-receipts/{id}/resolve`    | 200 / 404 / 409       | Relaciona una recepción con una pieza (`{part_id, location_id?}`). 409 si ya estaba resuelta.           |
+| `POST /issues`                             | 201 / 404 / 409       | Salida de material (`{work_order_code, part_id, location_id, quantity, issued_by}`). 409 si no alcanza. |
+| `POST /transfers`                          | 201 / 404 / 409 / 422 | Transferencia entre ubicaciones. Origen igual a destino da 422.                                         |
+| `POST /counts`                             | 201 / 404 / 422       | Conteo físico (`{location_id, reason, lines:[{part_id, counted_quantity}]}`). Sin `reason` da 422.      |
 
 ### Extensión
 
@@ -445,11 +452,11 @@ socket.on('agent:message', (msg) => { /* mensaje del agente: msg.message */ });
 socket.emit('parts:list', { q: 'motor' }, ({ items }) => { /* productos */ });
 ```
 
-| Mensaje | Dirección | Contenido |
-|---|---|---|
-| `notification` | API → UI | Sobre del evento (`event_id`, `event_type`, `occurred_at`, `key`, `data`, …). Llega por cada evento `stock.*` que genera la API y por cada evento que consume de SQS. |
-| `agent:message` | API → UI | `{message, data, received_at}`: lo que el agente entregó en `POST /agent/messages`. |
-| `parts:list` | UI → API, con respuesta | Mismos filtros que `GET /parts`; responde `{items}`. |
+| Mensaje         | Dirección               | Contenido                                                                                                                                                             |
+| --------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notification`  | API → UI                | Sobre del evento (`event_id`, `event_type`, `occurred_at`, `key`, `data`, …). Llega por cada evento `stock.*` que genera la API y por cada evento que consume de SQS. |
+| `agent:message` | API → UI                | `{message, data, received_at}`: lo que el agente entregó en `POST /agent/messages`.                                                                                   |
+| `parts:list`    | UI → API, con respuesta | Mismos filtros que `GET /parts`; responde `{items}`.                                                                                                                  |
 
 Las notificaciones salen solo después de guardar el cambio en la base. Una UI desconectada no recibe lo
 que pasó mientras tanto: al reconectar vuelve a pedir los datos.

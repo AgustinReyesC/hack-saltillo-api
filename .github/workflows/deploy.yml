@@ -1,0 +1,85 @@
+name: Deploy API
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-api-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_cors_origin: ${{ vars.CORS_ORIGIN }}
+      TF_VAR_database_host: ${{ vars.DATABASE_HOST }}
+      TF_VAR_database_port: ${{ vars.DATABASE_PORT }}
+      TF_VAR_database_name: ${{ vars.DATABASE_NAME }}
+      TF_VAR_database_user: ${{ vars.DATABASE_USER }}
+      TF_VAR_database_password_secret_arn: ${{ vars.DATABASE_PASSWORD_SECRET_ARN }}
+      TF_VAR_database_security_group_id: ${{ vars.DATABASE_SECURITY_GROUP_ID }}
+      TF_VAR_agent_url: ${{ vars.AGENT_URL }}
+      TF_VAR_image_tag: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+
+      - name: Check and test
+        run: |
+          npm ci
+          npm test
+          npm run lint
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Initialize Terraform
+        run: >-
+          terraform -chdir=infra init -input=false
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="key=hack-saltillo-api/terraform.tfstate"
+          -backend-config="region=${{ vars.AWS_REGION }}"
+          -backend-config="encrypt=true"
+          -backend-config="use_lockfile=true"
+
+      - name: Validate Terraform
+        run: terraform -chdir=infra validate
+
+      - name: Create ECR repository
+        run: terraform -chdir=infra apply -input=false -auto-approve -target=aws_ecr_repository.api
+
+      - name: Login to ECR
+        id: ecr
+        run: |
+          repository_url="$(terraform -chdir=infra output -raw ecr_repository_url)"
+          registry="${repository_url%%/*}"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry"
+          echo "repository_url=$repository_url" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        run: |
+          docker build --tag "${{ steps.ecr.outputs.repository_url }}:${TF_VAR_image_tag}" .
+          docker push "${{ steps.ecr.outputs.repository_url }}:${TF_VAR_image_tag}"
+
+      - name: Deploy ECS service
+        run: terraform -chdir=infra apply -input=false -auto-approve

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { HttpStatus, Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_PIPE } from '@nestjs/core';
@@ -22,18 +23,24 @@ import { WorkOrdersModule } from './work-orders/work-orders.module.js';
     ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.getOrThrow<string>('DATABASE_HOST'),
-        port: Number(config.getOrThrow<string>('DATABASE_PORT')),
-        database: config.getOrThrow<string>('DATABASE_NAME'),
-        username: config.getOrThrow<string>('DATABASE_USER'),
-        password: config.getOrThrow<string>('DATABASE_PASSWORD'),
-        ssl: config.get<string>('DATABASE_SSL') === 'true',
-        // El esquema lo crea Liquibase en hack-saltillo-db.
-        synchronize: false,
-        autoLoadEntities: true,
-      }),
+      useFactory: (config: ConfigService) => {
+        const databaseSslEnabled = config.get<string>('DATABASE_SSL') === 'true';
+
+        return {
+          type: 'postgres',
+          host: config.getOrThrow<string>('DATABASE_HOST'),
+          port: Number(config.getOrThrow<string>('DATABASE_PORT')),
+          database: config.getOrThrow<string>('DATABASE_NAME'),
+          username: config.getOrThrow<string>('DATABASE_USER'),
+          password: config.getOrThrow<string>('DATABASE_PASSWORD'),
+          ssl: databaseSslEnabled
+            ? { ca: readFileSync(config.getOrThrow<string>('DATABASE_SSL_CA_PATH'), 'utf8') }
+            : false,
+          // El esquema lo crea Liquibase en hack-saltillo-db.
+          synchronize: false,
+          autoLoadEntities: true,
+        };
+      },
     }),
     HealthModule,
     PartsModule,
