@@ -1,8 +1,17 @@
-import { Module } from '@nestjs/common';
+import { HttpStatus, Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
+import { AgentModule } from './agent/agent.module.js';
+import { CommitmentsModule } from './commitments/commitments.module.js';
+import { DetailExceptionFilter } from './common/filters/detail-exception.filter.js';
+import { EventsModule } from './events/events.module.js';
+import { HealthModule } from './health/health.module.js';
+import { InventoryModule } from './inventory/inventory.module.js';
+import { PartInstancesModule } from './part-instances/part-instances.module.js';
+import { PartsModule } from './parts/parts.module.js';
+import { PurchasingModule } from './purchasing/purchasing.module.js';
+import { WorkOrdersModule } from './work-orders/work-orders.module.js';
 
 @Module({
   imports: [
@@ -23,8 +32,27 @@ import { AppService } from './app.service.js';
         autoLoadEntities: true,
       }),
     }),
+    HealthModule,
+    PartsModule,
+    PartInstancesModule,
+    WorkOrdersModule,
+    CommitmentsModule,
+    InventoryModule,
+    PurchasingModule,
+    EventsModule,
+    AgentModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    // Globales vía DI (no en main.ts) para que también apliquen en las pruebas e2e.
+    { provide: APP_FILTER, useClass: DetailExceptionFilter },
+    {
+      provide: APP_PIPE,
+      useValue: new ValidationPipe({
+        whitelist: true,
+        transform: true,
+        errorHttpStatusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+      }),
+    },
+  ],
 })
 export class AppModule {}

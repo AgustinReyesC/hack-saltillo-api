@@ -9,6 +9,14 @@ SQS no guarda offsets: un mensaje solo se borra de la cola (`DeleteMessage`) des
 
 API
 La aplicacion te puede permitir buscar o preguntarle al agente. Ambos mandan llamar los endpoints de la API para conocer esta informacion. La API permite CORS solamente desde el origen de la UI (`http://localhost:5173` en local); el agente llama desde servidor, así que CORS no le aplica.
+
+### Comunicación
+- **Agente ↔ API: REST (HTTP).** El agente consulta las rutas de la API como cualquier cliente HTTP y le entrega a la API los mensajes que genera (`POST /agent/messages`).
+- **UI ↔ API: WebSocket.** La API es el servidor de WebSocket (socket.io, mismo puerto `8000`). La UI se conecta y renderiza lo que la API le manda:
+  - `notification`: cada evento que la API consume de SQS (ya procesado) y cada evento `stock.*` que genera. La UI lo muestra como una nueva notificación/alerta.
+  - `agent:message`: el mensaje que generó el agente.
+  - `parts:list`: la UI pide los productos de la base y la API responde con ellos (mismos filtros que `GET /parts`).
+- La UI también puede usar las rutas REST (por ejemplo, las del contrato para el escaneo en piso).
 El simulador solamente genera eventos y los manda a SQS; cada mensaje trae el evento como JSON.
 La api tiene que consumir estos JSON, ademas llegando los eventos se guarden bien conforme a la arquitectura de la base de datos.
 Cada evento se guarda primero completo en `event_inbox` (sobre en `payload` JSONB) y después se proyecta a las tablas de dominio. Los eventos que genera la API (`stock.*`) se encolan en `outbox_event` y se publican en la cola `inventory-broker-inventory-events.fifo`; los que no se pueden procesar van a `dead_letter_event` y a la cola `inventory-broker-inventory-dlq.fifo`.
@@ -48,7 +56,10 @@ Las unidades son una capa aparte del inventario: **no** modifican `movement` ni 
 - GET events
   - El consumo **no** es una ruta HTTP: lo hace el consumidor en segundo plano mediante nestjs-microservices, con un transporte propio sobre SQS (`@aws-sdk/client-sqs`). Cada evento se despacha a su función con `@EventPattern(<event_type>)`.
   - Un evento es `{event_id (UUID), event_type, event_version, occurred_at, source, key, data}`; la función se elige por `event_type`.
-  - `GET /events` lista lo ya consumido y lo generado: `event_inbox` (entrada), `outbox_event` (salida), `dead_letter_event` (DLQ). Es de solo lectura y está protegida con JWT (`Authorization: Bearer <token>`).
+  - `GET /events` lista lo ya consumido y lo generado: `event_inbox` (entrada), `outbox_event` (salida), `dead_letter_event` (DLQ). Es de solo lectura. La autenticación (JWT) queda pospuesta.
+  - Cada evento procesado se le manda a la UI por WebSocket (`notification`).
+- POST agent/messages
+  - `POST /agent/messages` `{message, data?}`: el agente entrega el mensaje que generó y la API se lo manda a la UI por WebSocket (`agent:message`). No se guarda en la base.
 - POST product/ordenCompra,
   - "product" es `part` (`part_id` entero) y "ordenCompra" es `purchase_order` (`po_number`, `supplier_id`, `status`, `currency`, `ordered_at`, `expected_at`) con sus renglones en `purchase_line` (`part_number`, `part_id`, `quantity`, `unit_price`, `currency`, `purpose`) colgando de una `purchase_request`.
   - El contrato no define órdenes de compra: es una extensión de la base. `purchase_request_id` y `line_id` son enteros **sin secuencia**; hay que asignarlos desde la API (ver `API README.md`, sección 12).
@@ -70,11 +81,13 @@ La base de datos real vive en un RDS compartido. En ECS las credenciales de SQS 
 ## Flujo
 La API recibe los cambios a realizar a traves de los eventos que consume de SQS.
 
+El agente habla con la API por REST (HTTP) y la API habla con la UI por WebSocket.
+
 Evento:
-broker SQS (tiene evento) -> api (consumiendo evento por evento) -> ui/agente/db (basandose en el evento la api decide que hacer y que endpoint usar) 
+broker SQS (tiene evento) -> api (consumiendo evento por evento) -> ui/agente/db (basandose en el evento la api decide que hacer y que endpoint usar; a la ui le llega como `notification` por WebSocket) 
 
 pregunta del agente:
-ui (mensaje del usuario, manda evento) -> broker SQS (cola `inventory-broker-notifications.fifo`) -> api (consume el evento) -> agente (lee el mensaje) -> api (query del agente) -> agente (recibe los datos y los procesa) -> ui (respuesta del agente)
+ui (mensaje del usuario, manda evento) -> broker SQS (cola `inventory-broker-notifications.fifo`) -> api (consume el evento) -> agente (lee el mensaje) -> api (query del agente, HTTP) -> agente (recibe los datos y los procesa) -> api (`POST /agent/messages`) -> ui (respuesta del agente, `agent:message` por WebSocket)
 
 automatico lectura base de datos:
-agente (leer base de datos) -> api (obtener los registros) -> agente (recibe los datos) -> api (recibe mensaje generado )-> ui (muestra el mensaje generado para el agente)
+agente (leer base de datos) -> api (obtener los registros, HTTP) -> agente (recibe los datos) -> api (recibe mensaje generado, `POST /agent/messages`) -> ui (muestra el mensaje generado para el agente, `agent:message` por WebSocket)
