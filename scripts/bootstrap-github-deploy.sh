@@ -201,12 +201,13 @@ if [[ -z "$database_secret_arn" ]]; then
   read -r -s -p 'Contraseña PostgreSQL (no se mostrará): ' database_password
   printf '\n'
   [[ -n "$database_password" ]] || { printf 'La contraseña no puede estar vacía.\n' >&2; exit 1; }
+  database_secret="$(jq -cn --arg password "$database_password" '{password: $password}')"
   database_secret_arn="$(aws secretsmanager create-secret \
     --name hack-saltillo-api/database-password \
     --description 'Password de PostgreSQL para hack-saltillo-api' \
-    --secret-string "$database_password" \
+    --secret-string "$database_secret" \
     --query ARN --output text)"
-  unset database_password
+  unset database_password database_secret
 fi
 
 required_values=(

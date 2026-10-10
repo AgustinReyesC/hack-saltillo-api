@@ -262,7 +262,7 @@ resource "aws_ecs_task_definition" "api" {
     environment = local.container_environment
     secrets = [{
       name      = "DATABASE_PASSWORD"
-      valueFrom = var.database_password_secret_arn
+      valueFrom = "${var.database_password_secret_arn}:password::"
     }]
     healthCheck = {
       command     = ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]

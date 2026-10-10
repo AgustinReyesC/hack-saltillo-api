@@ -405,8 +405,8 @@ AWS_REGION=us-east-1 bash scripts/bootstrap-github-deploy.sh OWNER/REPO
 El script crea el bucket S3 versionado y cifrado, el proveedor OIDC y el rol de Actions con confianza
 para pushes y ejecuciones manuales en cualquier rama de ese repo. Usa el subject OIDC inmutable de
 GitHub (IDs de owner y repo). Te pide la configuración de RDS/UI/agente y carga todas las variables que
-consume el workflow. Si no proporcionas el ARN de un secreto existente, pide la contraseña sin mostrarla
-y la guarda en Secrets Manager. Para usar el repo GitHub actual, omite `OWNER/REPO`.
+consume el workflow. ECS extrae `password` de un secreto JSON; el script lo crea en ese formato si no
+proporcionas el ARN de un secreto existente. Para usar el repo GitHub actual, omite `OWNER/REPO`.
 
 ### Desplegar
 
