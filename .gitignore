@@ -48,6 +48,9 @@ lerna-debug.log*
 .env
 .env.local
 
+# Certificados locales de HTTPS (npm run cert:local)
+/certs
+
 # temp directory
 .temp
 .tmp

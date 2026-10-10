@@ -4,6 +4,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
 import { CommitmentsService } from '../commitments/commitments.service.js';
 import { Movement, toInt, toMovement } from '../common/serialization.js';
@@ -67,6 +68,7 @@ export class InventoryService {
         await this.outbox.save(manager, event);
         events.push(event);
         adjustments.push({ part_id: line.part_id, delta });
+        await this.ledger.rebalance(manager, line.part_id);
       }
 
       await this.recomputeSuggestions(manager, partIds, events);
@@ -110,6 +112,7 @@ export class InventoryService {
         },
       );
       const reference = `transfer:${event.event_id}`;
+      const transferGroupId = randomUUID();
       const transferOut = await this.ledger.addMovement(manager, {
         type: 'transfer_out',
         partId: dto.part_id,
@@ -117,6 +120,7 @@ export class InventoryService {
         quantity: -dto.quantity,
         reference,
         eventId: event.event_id,
+        transferGroupId,
       });
       const transferIn = await this.ledger.addMovement(manager, {
         type: 'transfer_in',
@@ -125,9 +129,12 @@ export class InventoryService {
         quantity: dto.quantity,
         reference,
         eventId: event.event_id,
+        transferGroupId,
       });
       await this.outbox.save(manager, event);
       events.push(event);
+      // Lo apartado sigue a la existencia: si salió de una ubicación con reserva, pasa al destino.
+      await this.ledger.rebalance(manager, dto.part_id);
 
       return {
         ...toMovement(transferOut),
@@ -140,14 +147,22 @@ export class InventoryService {
   // alcanza, 409 sin mover nada.
   async issue(dto: IssueDto): Promise<Movement> {
     return this.run(async (manager, events) => {
-      const [workOrder]: { work_order_id: number; code: string }[] =
-        await manager.query(
-          'SELECT work_order_id, code FROM work_order WHERE code = $1',
-          [dto.work_order_code],
-        );
+      const [workOrder]: {
+        work_order_id: number;
+        code: string;
+        deleted: boolean;
+      }[] = await manager.query(
+        'SELECT work_order_id, code, deleted FROM work_order WHERE code = $1',
+        [dto.work_order_code],
+      );
       if (!workOrder) {
         throw new NotFoundException(
           `Work order ${dto.work_order_code} not found`,
+        );
+      }
+      if (workOrder.deleted) {
+        throw new ConflictException(
+          `Work order ${dto.work_order_code} was deleted`,
         );
       }
       await this.ledger.assertPartsExist(manager, [dto.part_id]);
@@ -195,6 +210,8 @@ export class InventoryService {
         quantity: -dto.quantity,
         reference: workOrder.code,
         eventId: event.event_id,
+        workOrderId: workOrder.work_order_id,
+        issuedBy: String(dto.issued_by),
       });
       const consumed = Math.min(dto.quantity, own);
       await this.commitments.consumeReservations(
@@ -203,7 +220,8 @@ export class InventoryService {
         dto.part_id,
         consumed,
       );
-      await this.ledger.addReserved(manager, dto.part_id, -consumed);
+      await this.ledger.release(manager, dto.part_id, consumed);
+      await this.ledger.rebalance(manager, dto.part_id);
       await this.outbox.save(manager, event);
       events.push(event);
 

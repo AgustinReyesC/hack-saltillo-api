@@ -45,6 +45,7 @@ describe('App (e2e)', () => {
       database: 'up',
       pending_events: expect.any(Number),
       unpublished_events: expect.any(Number),
+      dead_events: expect.any(Number),
     });
   });
 

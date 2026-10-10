@@ -8,7 +8,7 @@ La api siempre esta conectada al broker (AWS SQS): un consumidor en segundo plan
 SQS no guarda offsets: un mensaje solo se borra de la cola (`DeleteMessage`) después de guardarse en la base, así que lo que no se confirmó sigue en la cola (o reaparece al vencer su *visibility timeout*) y se vuelve a leer. SQS tampoco permite releer lo ya borrado: el historial completo de lo consumido queda en `event_inbox`. La base garantiza que releer no duplica nada: `event_inbox.event_id` es llave primaria.
 
 API
-La aplicacion te puede permitir buscar o preguntarle al agente. Ambos mandan llamar los endpoints de la API para conocer esta informacion. La API permite CORS solamente desde el origen de la UI (`http://localhost:5173` en local); el agente llama desde servidor, así que CORS no le aplica.
+La aplicacion te puede permitir buscar o preguntarle al agente. Ambos mandan llamar los endpoints de la API para conocer esta informacion. La API permite CORS solamente desde los orígenes de la UI: en local, `localhost` y las IP de la red local (el celular); en dev, el dominio de CloudFront (`CORS_ORIGINS`). El agente llama desde servidor, así que CORS no le aplica. Para el celular la API también se sirve por HTTPS (puerto `8443`), porque la cámara solo abre en una página segura.
 
 ### Comunicación
 - **Agente ↔ API: REST (HTTP).** El agente consulta las rutas de la API como cualquier cliente HTTP y le entrega a la API los mensajes que genera (`POST /agent/messages`).
@@ -54,7 +54,7 @@ Las unidades son una capa aparte del inventario: **no** modifican `movement` ni 
 
 ### Endpoints
 - GET events
-  - El consumo **no** es una ruta HTTP: lo hace el consumidor en segundo plano mediante nestjs-microservices, con un transporte propio sobre SQS (`@aws-sdk/client-sqs`). Cada evento se despacha a su función con `@EventPattern(<event_type>)`.
+  - El consumo **no** es una ruta HTTP: lo hace el consumidor en segundo plano (`src/ingest/sqs-consumer.ts`, `@aws-sdk/client-sqs`). Cada evento se despacha a su función según su `event_type` (`src/ingest/event-dispatcher.ts`). No usa `@nestjs/microservices`: Nest atrapa la excepción de un `@EventPattern` y el pipeline necesita saber que falló para revertir y dejar el evento pendiente.
   - Un evento es `{event_id (UUID), event_type, event_version, occurred_at, source, key, data}`; la función se elige por `event_type`.
   - `GET /events` lista lo ya consumido y lo generado: `event_inbox` (entrada), `outbox_event` (salida), `dead_letter_event` (DLQ). Es de solo lectura. La autenticación (JWT) queda pospuesta.
   - Cada evento procesado se le manda a la UI por WebSocket (`notification`).

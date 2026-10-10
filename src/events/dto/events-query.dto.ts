@@ -2,10 +2,11 @@ import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class EventsQueryDto {
-  // `inbox` = consumidos de SQS, `outbox` = generados por la API, `dlq` = no procesables.
+  // `inbox` = consumidos de SQS, `outbox` = generados por la API, `dlq` = no procesables. No se
+  // llama `source` para no confundirse con el `source` del sobre (`shop-floor` / `inventory`).
   @IsOptional()
   @IsIn(['inbox', 'outbox', 'dlq'])
-  source?: string;
+  origin?: string;
 
   @IsOptional()
   @IsString()
@@ -16,6 +17,7 @@ export class EventsQueryDto {
   @IsString()
   status?: string;
 
+  // shop.catalog … notifications (inbox), inventory.events / inventory.dlq (outbox).
   @IsOptional()
   @IsString()
   topic?: string;

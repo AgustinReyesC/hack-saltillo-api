@@ -32,8 +32,8 @@ de WebSocket con el que la UI se entera de los cambios en tiempo real.
 - Node.js 24.15 o superior y npm. Probado con 25.9: el CLI de Nest muestra un aviso `EBADENGINE` en esa
   versión, pero funciona.
 - Docker, para la base de datos local.
-- Acceso a AWS con permisos sobre las colas SQS (ver [Colas SQS](#colas-sqs)). Las pruebas locales usan
-  las colas reales, no un emulador.
+- Acceso a AWS con permisos sobre las colas SQS (ver [Colas SQS](#colas-sqs)), o el emulador ElasticMQ que
+  levanta `hack-saltillo-broker` (`docker compose up -d elasticmq`, `SQS_ENDPOINT_URL=http://localhost:9324`).
 
 ### Pasos
 
@@ -70,49 +70,108 @@ de WebSocket con el que la UI se entera de los cambios en tiempo real.
 5. **Generar eventos.** El simulador del taller publica los eventos en las colas de entrada y la API los
    consume en cuanto llegan.
 
+### HTTPS para el celular
+
+La pantalla de piso escanea con la cámara del celular, y el navegador solo abre la cámara en una página
+segura (HTTPS). Una página HTTPS tampoco puede llamar a `http://` ni a `ws://`, así que la API también se
+sirve por HTTPS. En local hay dos puertos con las mismas rutas y el mismo WebSocket:
+
+| Puerto | Protocolo | Quién lo usa |
+|---|---|---|
+| `8000` (`PORT`) | HTTP / `ws://` | Pruebas de contrato, agente, UI en la laptop. |
+| `8443` (`HTTPS_PORT`) | HTTPS / `wss://` | UI abierta en el celular. |
+
+1. **Instalar [mkcert](https://github.com/FiloSottile/mkcert)** (`winget install FiloSottile.mkcert`,
+   `choco install mkcert` o `brew install mkcert`) y su autoridad local, una sola vez:
+
+   ```bash
+   mkcert -install
+   ```
+
+2. **Generar el certificado** con la IP de la laptop en la red local (`ipconfig` en Windows,
+   `ipconfig getifaddr en0` en Mac). Queda en `certs/`, que no se versiona:
+
+   ```bash
+   npm run cert:local -- 192.168.1.50
+   ```
+
+   Si la IP cambia, se vuelve a generar. `.env.local` ya apunta a `certs/local-key.pem` y
+   `certs/local-cert.pem`; con esas dos variables vacías la API arranca solo con HTTP.
+
+3. **Confiar en el certificado desde el celular.** Opción rápida: abrir `https://192.168.1.50:8443/health` en
+   el navegador del celular y aceptar la advertencia una vez. Opción permanente: instalar en el celular la
+   autoridad de mkcert (`rootCA.pem` de la carpeta que imprime `mkcert -CAROOT`).
+
+4. **Abrir el puerto en el firewall** de la laptop si el celular no llega (Windows lo pide la primera vez).
+
+La UI también se sirve por HTTPS en el celular y apunta a `https://<ip-de-la-laptop>:8443`. En local el
+CORS ya acepta `localhost` y las IP de la red local en cualquier puerto, así que no hay que tocarlo.
+
 ## Scripts
 
 Cada script de arranque carga su propio archivo de entorno con `node --env-file`.
 
-| Script                | Archivo de entorno | `NODE_ENV` | Descripción                                             |
-| --------------------- | ------------------ | ---------- | ------------------------------------------------------- |
-| `npm run start`       | `.env.local`       | `local`    | Compila y arranca.                                      |
-| `npm run start:dev`   | `.env.local`       | `local`    | Modo observación: recompila al guardar.                 |
-| `npm run start:debug` | `.env.local`       | `local`    | Observación con el depurador de Node.                   |
-| `npm run start:prod`  | `.env`             | `dev`      | Arranca el build de `dist/` (requiere `npm run build`). |
-| `npm run build`       |                    |            | Compila a `dist/`.                                      |
-| `npm run test`        |                    |            | Pruebas unitarias (Vitest).                             |
-| `npm run test:e2e`    |                    |            | Pruebas end-to-end.                                     |
-| `npm run test:cov`    |                    |            | Pruebas con cobertura.                                  |
-| `npm run lint`        |                    |            | Oxlint sobre `src/` y `test/`.                          |
-| `npm run format`      |                    |            | Prettier.                                               |
+| Script | Archivo de entorno | `NODE_ENV` | Descripción |
+|---|---|---|---|
+| `npm run start` | `.env.local` | `local` | Compila y arranca. |
+| `npm run start:dev` | `.env.local` | `local` | Modo observación: recompila al guardar. |
+| `npm run start:debug` | `.env.local` | `local` | Observación con el depurador de Node. |
+| `npm run start:prod` | `.env` | `dev` | Arranca el build de `dist/` (requiere `npm run build`). |
+| `npm run build` | | | Compila a `dist/`. |
+| `npm run cert:local -- <ip>` | | | Certificado HTTPS local con mkcert (ver [HTTPS para el celular](#https-para-el-celular)). |
+| `npm run test` | | | Pruebas unitarias (Vitest). |
+| `npm run test:e2e` | | | Pruebas end-to-end. |
+| `npm run test:cov` | | | Pruebas con cobertura. |
+| `npm run lint` | | | Oxlint sobre `src/` y `test/`. |
+| `npm run format` | | | Prettier. |
 
 `.env.local` y `.env` no se versionan. `.env.example` documenta todas las variables con placeholders.
 
 ## Variables de entorno
 
-| Variable                   | Valor local             | Descripción                                                                     |
-| -------------------------- | ----------------------- | ------------------------------------------------------------------------------- |
-| `NODE_ENV`                 | `local` / `dev`         | `local` en `.env.local`, `dev` en `.env`.                                       |
-| `PORT`                     | `8000`                  | Puerto HTTP. Las pruebas de contrato esperan el 8000.                           |
-| `CORS_ORIGIN`              | `http://localhost:5173` | Origen de la UI. Es el único al que se permite CORS (HTTP y WebSocket).         |
-| `DATABASE_HOST`            | `localhost`             | En ECS, el endpoint del RDS compartido.                                         |
-| `DATABASE_PORT`            | `5432`                  |                                                                                 |
-| `DATABASE_NAME`            | `inventario`            |                                                                                 |
-| `DATABASE_USER`            | `inventario`            |                                                                                 |
-| `DATABASE_PASSWORD`        | `inventario`            |                                                                                 |
-| `DATABASE_SSL`             | `false`                 | `true` contra RDS.                                                              |
-| `AWS_REGION`               |                         | Región de las colas.                                                            |
-| `AWS_ACCESS_KEY_ID`        |                         | Solo para correr fuera de AWS. En ECS se deja vacía: se usa el rol de la tarea. |
-| `AWS_SECRET_ACCESS_KEY`    |                         | Ídem.                                                                           |
-| `SQS_SHOP_CATALOG_URL`     |                         | URL de `inventory-broker-shop-catalog.fifo`.                                    |
-| `SQS_SHOP_WORK_ORDERS_URL` |                         | URL de `inventory-broker-shop-work-orders.fifo`.                                |
-| `SQS_SHOP_INSPECTIONS_URL` |                         | URL de `inventory-broker-shop-inspections.fifo`.                                |
-| `SQS_SHOP_PURCHASING_URL`  |                         | URL de `inventory-broker-shop-purchasing.fifo`.                                 |
-| `SQS_NOTIFICATIONS_URL`    |                         | URL de `inventory-broker-notifications.fifo`.                                   |
-| `SQS_INVENTORY_EVENTS_URL` |                         | URL de `inventory-broker-inventory-events.fifo`.                                |
-| `SQS_INVENTORY_DLQ_URL`    |                         | URL de `inventory-broker-inventory-dlq.fifo`.                                   |
-| `AGENT_URL`                |                         | URL del agente.                                                                 |
+| Variable | Valor local | Descripción |
+|---|---|---|
+| `NODE_ENV` | `local` / `dev` | `local` en `.env.local`, `dev` en `.env`. |
+| `PORT` | `8000` | Puerto HTTP. Las pruebas de contrato esperan el 8000. |
+| `CORS_ORIGINS` | (vacío) | Orígenes de la UI con CORS (HTTP y WebSocket), separados por coma, sin ruta ni `/` final. En `local` se suman a `localhost` y las IP de la red local, que ya se permiten. En `dev` es obligatorio: el dominio de CloudFront. |
+| `HTTPS_PORT` | `8443` | Puerto HTTPS, para el celular. |
+| `HTTPS_KEY_PATH` | `certs/local-key.pem` | Llave del certificado. Vacía junto con `HTTPS_CERT_PATH` = solo HTTP. |
+| `HTTPS_CERT_PATH` | `certs/local-cert.pem` | Certificado. En `dev` se dejan vacías si el TLS lo termina el balanceador. |
+| `DATABASE_HOST` | `localhost` | En ECS, el endpoint del RDS compartido. |
+| `DATABASE_PORT` | `5432` | |
+| `DATABASE_NAME` | `inventario` | |
+| `DATABASE_USER` | `inventario` | |
+| `DATABASE_PASSWORD` | `inventario` | |
+| `DATABASE_SSL` | `false` | `true` contra RDS. |
+| `AWS_REGION` | | Región de las colas. |
+| `AWS_ACCESS_KEY_ID` | | Solo para correr fuera de AWS. En ECS se deja vacía: se usa el rol de la tarea. |
+| `AWS_SECRET_ACCESS_KEY` | | Ídem. |
+| `SQS_SHOP_CATALOG_URL` | | URL de `inventory-broker-shop-catalog.fifo`. |
+| `SQS_SHOP_WORK_ORDERS_URL` | | URL de `inventory-broker-shop-work-orders.fifo`. |
+| `SQS_SHOP_INSPECTIONS_URL` | | URL de `inventory-broker-shop-inspections.fifo`. |
+| `SQS_SHOP_PURCHASING_URL` | | URL de `inventory-broker-shop-purchasing.fifo`. |
+| `SQS_NOTIFICATIONS_URL` | | URL de `inventory-broker-notifications.fifo`. |
+| `SQS_INVENTORY_EVENTS_URL` | | URL de `inventory-broker-inventory-events.fifo`. |
+| `SQS_INVENTORY_DLQ_URL` | | URL de `inventory-broker-inventory-dlq.fifo`. |
+| `SQS_ENDPOINT_URL` | | Solo con un emulador local (ElasticMQ: `http://localhost:9324`). En AWS, vacía. |
+| `AGENT_URL` | | URL a la que la API reenvía (`POST`, con el sobre) cada evento de `notifications`. Vacía = no reenvía. |
+| `INGEST_MAX_WAIT_MINUTES` | `60` | Opcional. Minutos que un evento puede esperar una dependencia antes de ir a la DLQ. |
+| `INGEST_MAX_ATTEMPTS` | `5` | Opcional. Intentos de un evento que falla por un error (no por una dependencia) antes de la DLQ. |
+| `INGEST_RETRY_INTERVAL_MS` | `5000` | Opcional. Cada cuánto se reintentan los eventos pendientes. |
+| `OUTBOX_PUBLISH_INTERVAL_MS` | `250` | Opcional. Cada cuánto se publica `outbox_event` en las colas de salida. |
+
+Sin colas configuradas la API arranca igual (rutas HTTP y WebSocket) y avisa que no consume ni publica.
+
+`NODE_ENV` decide el CORS y el modo de arranque:
+
+| | `local` (`.env.local`) | `dev` (`.env`) |
+|---|---|---|
+| CORS | `localhost` e IP de la red local, más `CORS_ORIGINS` | Solo `CORS_ORIGINS` (CloudFront) |
+| HTTPS | Puerto 8443 con el certificado de mkcert | Normalmente en el balanceador; en la tarea solo si hay certificado |
+| Base de datos | `hack-saltillo-db` en `localhost` | RDS (`DATABASE_SSL=true`) |
+
+La API valida esto al arrancar y se detiene con un mensaje claro si `NODE_ENV` no es `local` ni `dev`, si
+un origen está mal escrito (o sigue siendo un placeholder) o si no encuentra el certificado.
 
 ## Flujo de información
 
@@ -216,22 +275,38 @@ Todos los eventos usan el mismo sobre:
 }
 ```
 
-Por cada mensaje:
+El consumidor (`src/ingest/sqs-consumer.ts`) hace *long polling* a cada cola de entrada y le pasa cada mensaje
+al pipeline (`src/ingest/ingest.service.ts`), que elige la función del `event_type`
+(`src/ingest/event-dispatcher.ts`). Por cada mensaje:
 
-1. Se valida el sobre contra el JSON Schema del contrato. Si es inválido o el `event_type` es desconocido,
-   va a `dead_letter_event` y a `inventory-broker-inventory-dlq.fifo`.
-2. **Dedup:** si el `event_id` ya está en `event_inbox` con `status = 'processed'`, se descarta.
-3. En una transacción, con candados por pieza y por orden, se guarda el sobre completo en `event_inbox`.
-4. Se ejecuta la función del `event_type`: escribe las tablas de dominio y encola las salidas en `outbox_event`.
-5. El evento queda `processed` y se hace `COMMIT`.
-6. Se borra el mensaje de SQS.
+1. Se valida el sobre contra el JSON Schema del contrato (`contract/schemas`, copia del kit). Si es inválido o
+   el `event_type` es desconocido, va a `dead_letter_event` y a `inventory-broker-inventory-dlq.fifo`.
+2. **Dedup:** se inserta en `event_inbox` y se toma su fila con `FOR UPDATE`; si ya estaba `processed`, no
+   pasa nada ni se emite nada (regla 19).
+3. **Orden por llave:** si un evento anterior con la misma llave en el mismo tópico sigue pendiente, este
+   espera su turno.
+4. En la misma transacción se ejecuta la función del `event_type`: escribe las tablas de dominio y encola
+   las salidas en `outbox_event`. El evento queda `processed` y se hace `COMMIT`.
+5. Se avisa a la UI (`notification` por WebSocket) con el evento consumido y los que generó, y se borra el
+   mensaje de SQS.
 
-Si falta una dependencia (por ejemplo, una inspección que llega antes de su orden), el evento no se
-descarta: queda en `event_inbox` como `failed`, no detiene el consumo y se reintenta cuando llega lo que
-falta. Pasado el límite de intentos va a `dead_letter_event` y a la DLQ.
+Si falta una dependencia (una inspección que llega antes de su orden, una lista de partes antes que su
+pieza), el evento no se descarta: queda `failed` en `event_inbox`, no detiene el consumo y se reintenta
+(regla 20). `event_inbox` es la cola de reintentos: se recorre por orden de llegada cada vez que se aplica
+un evento y cada `INGEST_RETRY_INTERVAL_MS`, hasta que una pasada no destrabe nada. Lo que espera más de
+`INGEST_MAX_WAIT_MINUTES`, o falla `INGEST_MAX_ATTEMPTS` veces por un error, va a `dead_letter_event` y a
+la DLQ con su misma llave (regla 21). Si la base no responde, el mensaje no se borra y SQS lo vuelve a
+entregar.
 
-Al arrancar, y siempre que se reconstruya desde cero, la API vacía primero `inventory-broker-shop-catalog.fifo` antes de
-leer las demás colas, para que las compras no lleguen antes que sus piezas.
+**Catálogo primero (regla 22).** Al arrancar, la API lee `inventory-broker-shop-catalog.fifo` hasta vaciarla
+antes de las demás colas. En vivo, una compra no espera dependencias como una inspección: se relaciona con
+el catálogo que haya en ese momento, y si se aplica antes que el `part.upserted` que se publicó justo antes,
+el resultado ya no se corrige. Por eso, si el catálogo recibió algo en los últimos segundos, cada lote de
+compras espera a que termine una lectura del catálogo que empezó después de que llegó.
+
+**Ubicaciones con el mismo código.** `location.code` es único en la base, pero el código lo trae el evento
+más reciente: si otra ubicación lo tenía, se le aparta (`U-020~20`) hasta que llegue su propio upsert. Pasa
+con los estantes que crean las pruebas de contrato (`U-0xx`) sobre el catálogo ya cargado.
 
 ### Qué escribe cada evento
 
@@ -251,11 +326,19 @@ leer las demás colas, para que las compras no lleguen antes que sus piezas.
 
 ### Reglas de negocio
 
-- **Existencias:** `movement` es la fuente de verdad y `stock_balance` es una proyección. `available = on_hand - reserved`
-  no baja de 0 por reservas ni salidas; solo `POST /counts` puede dejarlo negativo.
-- **Necesidad:** solo los items de inspección con `action = 'buy'` generan necesidad, por `(orden, bom_line_id)`.
-  Una nueva aprobación **reemplaza** la cantidad, no la suma.
-- **Reserva y faltante:** se reserva `min(disponible, necesidad)` y el resto queda como faltante.
+- **Existencias:** `movement` es la fuente de verdad (inmutable) y `stock_balance.on_hand` lo recalcula el
+  trigger `trg_movement_apply_balance` de la base: la API solo inserta movimientos y administra `reserved`.
+  `available = on_hand - reserved` no baja de 0 por reservas ni salidas; solo `POST /counts` puede dejarlo negativo.
+- **Necesidad:** solo los items de inspección con `action = 'buy'` generan necesidad, por `(orden, bom_line_id)`,
+  en `work_order_need`. Una nueva aprobación **reemplaza** la cantidad, no la suma; lo ya entregado cuenta.
+- **Reserva y faltante:** se reserva `min(disponible, necesidad)` y el resto queda como faltante (uno abierto por
+  línea). La reserva es de la pieza, pero la base exige `reserved <= on_hand` por fila: se reparte entre las
+  ubicaciones con existencia libre (primero `U-100`) y sigue a la existencia cuando sale o se transfiere.
+- **Candados:** antes de tocar reservas o faltantes se toma `pg_advisory_xact_lock` por pieza (en orden
+  ascendente) y luego el de la orden: dos aprobaciones simultáneas no se llevan la misma última pieza.
+- **Cancelaciones:** `inspection.voided` libera lo que venía de esa inspección y borra la necesidad de esas
+  líneas; `work_order.deleted` libera todo lo de la orden. Una orden dada de baja ya no aparta material y
+  `POST /issues` contra ella responde 409.
 - **Compras:** `restock` se relaciona con `part.sku_norm` (sin mayúsculas ni espacios) y entra a la ubicación
   `U-100` (`location_id = 100`); además surte faltantes abiertos. `customer_order` se ignora. Sin pieza única,
   queda en `unmatched_receipt` para resolverse a mano.
@@ -277,8 +360,9 @@ capa aparte del inventario: no modifican `movement` ni `stock_balance`, la exist
 ## Eventos de salida
 
 Mismo sobre, con `source = "inventory"`, `event_version = 1` y un `event_id` nuevo. Se encolan en
-`outbox_event` dentro de la misma transacción que el cambio y un publicador los envía a
-`inventory-broker-inventory-events.fifo` (entrega al menos una vez).
+`outbox_event` dentro de la misma transacción que el cambio y un publicador (`src/ingest/outbox-publisher.ts`)
+los envía a `inventory-broker-inventory-events.fifo` con la llave como `MessageGroupId` y el `event_id` como
+`MessageDeduplicationId` (entrega al menos una vez).
 
 | Evento                    | `key`                     | Cuándo                                           |
 | ------------------------- | ------------------------- | ------------------------------------------------ |
@@ -311,39 +395,61 @@ Mismo sobre, con `source = "inventory"`, `event_version = 1` y un `event_id` nue
 
 ### Extensión
 
-| Método y ruta                                              | Descripción                                                                                                                                                                                |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /events?source=&type=&status=&topic=&limit=`          | Lista lo consumido y lo generado: `event_inbox` (`source=inbox`), `outbox_event` (`source=outbox`) y `dead_letter_event` (`source=dlq`). Solo lectura.                                     |
-| `POST /agent/messages`                                     | El agente entrega el mensaje que generó (`{message, data?}`) y la API se lo manda a la UI por WebSocket (`agent:message`). Responde 202.                                                   |
-| `POST /purchase-orders`                                    | Crea una orden de compra: `purchase_request`, `purchase_order` y `purchase_line`. No emite eventos `stock.*`.                                                                              |
-| `PATCH /parts/{part_id}`                                   | Modifica la política de reabasto del tipo de pieza (`reorder_policy`: mínimo, máximo, cantidad de reorden y lead time). Las columnas de `part` vienen de `part.upserted` y no se parchean. |
-| `GET /parts?q=&sku=&condition=&available=`                 | Busca tipos de pieza (`v_part_agent_summary`): existencia y cuántas unidades hay en cada estado.                                                                                           |
-| `GET /parts/{part_id}`                                     | Detalle de un tipo de pieza.                                                                                                                                                               |
-| `GET /part-instances?part_id=&condition=&work_order_code=` | Unidades físicas (`v_part_instance_agent`) con su estado, ubicación, orden, serie, herramientas (`tools`) y repuestos faltantes (`missing_components`).                                    |
-| `GET /part-instances/{instance_id}`                        | Detalle de una unidad física.                                                                                                                                                              |
-| `PATCH /part-instances/{instance_id}`                      | Modifica una unidad física (`condition_code`, `location_id`, `work_order_id`, `serial_number`, `note`). Cada cambio de estado queda en `part_status_history`.                              |
-| `GET /suppliers`                                           | Proveedores.                                                                                                                                                                               |
-| `GET /work-orders` y `GET /work-orders/{code}`             | Órdenes de trabajo y su historial de etapas.                                                                                                                                               |
-| `GET /health`                                              | Estado de la API: base de datos, eventos pendientes en `event_inbox` y `outbox_event` sin publicar.                                                                                        |
+| Método y ruta | Descripción |
+|---|---|
+| `GET /events?origin=&type=&status=&topic=&limit=` | Lista lo consumido y lo generado: `event_inbox` (`origin=inbox`), `outbox_event` (`origin=outbox`) y `dead_letter_event` (`origin=dlq`). Cada elemento es el sobre del evento más `origin`, `topic`, `status`, `error`, `retries` y `recorded_at`. Solo lectura. |
+| `GET /scan?code=` | Resuelve lo que leyó la cámara (ver [Escaneo en piso](#escaneo-en-piso)). |
+| `GET /locations?code=&active=` | Ubicaciones (`location_id`, `code`, `name`, `is_workbench`, `is_receiving`, `active`). |
+| `GET /locations/{location_id}/stock` | Lo que el sistema espera en una ubicación, por pieza: para el conteo cíclico. |
+| `GET /stock-balances?location_id=&part_id=` | Existencias por pieza y ubicación en una sola llamada (`on_hand`, `reserved`, `available`). |
+| `POST /agent/messages` | El agente entrega el mensaje que generó (`{message, data?}`) y la API se lo manda a la UI por WebSocket (`agent:message`). Responde 202. |
+| `POST /purchase-orders` | Crea una orden de compra: `purchase_request`, `purchase_order` y `purchase_line`. No emite eventos `stock.*`. |
+| `PATCH /parts/{part_id}` | Modifica la política de reabasto del tipo de pieza (`reorder_policy`: mínimo, máximo, cantidad de reorden y lead time). Las columnas de `part` vienen de `part.upserted` y no se parchean. |
+| `GET /parts?q=&sku=&condition=&available=` | Busca tipos de pieza (`v_part_agent_summary`): existencia y cuántas unidades hay en cada estado. |
+| `GET /parts/{part_id}` | Detalle de un tipo de pieza. |
+| `GET /part-instances?part_id=&condition=&work_order_code=` | Unidades físicas (`v_part_instance_agent`) con su estado, ubicación, orden, serie, herramientas (`tools`) y repuestos faltantes (`missing_components`). |
+| `GET /part-instances/{instance_id}` | Detalle de una unidad física. |
+| `PATCH /part-instances/{instance_id}` | Modifica una unidad física (`condition_code`, `location_id`, `work_order_id`, `serial_number`, `note`). Cada cambio de estado queda en `part_status_history`. |
+| `GET /suppliers` | Proveedores. |
+| `GET /work-orders` y `GET /work-orders/{code}` | Órdenes de trabajo y su historial de etapas. |
+| `GET /health` | Estado de la API: base de datos, eventos pendientes en `event_inbox`, `outbox_event` sin publicar y eventos en la DLQ. |
+
+`GET /parts` devuelve hasta 1000 piezas por defecto (la UI pide el catálogo completo). En
+`GET /parts/{part_id}/availability` cada ubicación reporta su `reserved` y `available` reales, porque la
+reserva se reparte entre ubicaciones.
+
+### Escaneo en piso
+
+La cámara del celular la decodifica el navegador; la API solo identifica lo leído. Las etiquetas son Code 128
+(contrato §5): ubicación = su `code` (`U-101`), pieza = su `sku` tal cual (`7014 CTA/P4`) o `P-<part_id>` si no
+tiene `sku`.
+
+`GET /scan?code=<texto>` (el texto va en la query, no en la ruta: los `sku` traen diagonales y comas) responde
+`{code, kind, ambiguous, matches}`:
+
+- `kind = 'location'`: ubicación por `code` (sin distinguir mayúsculas).
+- `kind = 'part'`: pieza por `sku` exacto; si no, por `P-<part_id>`; si no, por `sku` sin mayúsculas ni espacios
+  en los extremos. Cada coincidencia trae `on_hand`, `reserved` y `available`.
+- `ambiguous = true` cuando un `sku` es de varias piezas: la UI pide elegir.
+- `kind = 'unknown'` si nada coincide.
+
+Con la ubicación y la pieza, la UI llama `POST /issues`, `POST /transfers` o `POST /counts` (que piden ids). Para el
+conteo, `GET /locations/{location_id}/stock` dice qué espera el sistema en esa ubicación. Desde el celular todo va
+por HTTPS (ver [HTTPS para el celular](#https-para-el-celular)).
 
 ## WebSocket
 
-La API es el servidor de WebSocket (socket.io, en el mismo puerto `8000`). La UI se conecta con
-`socket.io-client`:
+La API es el servidor de WebSocket (socket.io, en los mismos puertos que HTTP: `ws://` en `8000` y `wss://`
+en `8443`). Es un solo servidor: un evento llega a la UI sin importar por cuál puerto se conectó. La UI se
+conecta con `socket.io-client`:
 
 ```js
 import { io } from 'socket.io-client';
 
-const socket = io('http://localhost:8000');
-socket.on('notification', (event) => {
-  /* nueva alerta: event.event_type, event.data */
-});
-socket.on('agent:message', (msg) => {
-  /* mensaje del agente: msg.message */
-});
-socket.emit('parts:list', { q: 'motor' }, ({ items }) => {
-  /* productos */
-});
+const socket = io('http://localhost:8000'); // en el celular: 'https://<ip-de-la-laptop>:8443'
+socket.on('notification', (event) => { /* nueva alerta: event.event_type, event.data */ });
+socket.on('agent:message', (msg) => { /* mensaje del agente: msg.message */ });
+socket.emit('parts:list', { q: 'motor' }, ({ items }) => { /* productos */ });
 ```
 
 | Mensaje         | Dirección               | Contenido                                                                                                                                                             |
@@ -362,7 +468,8 @@ que pasó mientras tanto: al reconectar vuelve a pedir los datos.
 - Listas: `{"items": [...]}`.
 - Importes como texto decimal (`"1850.00"`), cantidades enteras y fechas ISO 8601 UTC terminadas en `Z`.
 - Sin autenticación por ahora. Las rutas del contrato nunca la llevarán.
-- CORS permitido solo para el origen de la UI (`CORS_ORIGIN`).
+- CORS solo para los orígenes de la UI, según `NODE_ENV` (ver [Variables de entorno](#variables-de-entorno)).
+  El agente llama desde servidor, así que CORS no le aplica.
 - TypeORM con `synchronize: false`. Las columnas generadas (`part.sku_norm`, `stock_balance.available`) son
   de solo lectura y las vistas (`v_part_availability`, `v_part_agent_summary`, `v_part_instance_agent`, `v_open_shortages`,
   `v_unmatched_receipts`, `v_reorder_suggestions`, `v_part_ledger`) también.
@@ -371,11 +478,19 @@ que pasó mientras tanto: al reconectar vuelve a pedir los datos.
 
 ```bash
 npm run test        # unitarias
-npm run test:e2e    # end-to-end
+npm run test:e2e    # end-to-end (necesita la base de hack-saltillo-db en localhost)
 npm run test:cov    # cobertura
 ```
 
-Las pruebas de contrato del kit (`hackathon-inventario-kit`) se corren con la API en el puerto 8000:
+`test/ingest.e2e-spec.ts` corre los 14 escenarios de `contract-tests/run_tests.py` del kit con sus mismas
+comprobaciones, pero entregando los eventos directo al pipeline y leyendo las salidas de `outbox_event`; además
+valida cada evento de salida contra `contract/schemas/output` y su `key`. Usa ids propios por corrida y borra lo
+suyo al terminar.
+
+Las pruebas de contrato del kit (`hackathon-inventario-kit`) publican y leen por Kafka; con SQS necesitan la misma
+adaptación que el simulador: publicar en las colas de entrada (con un `MessageDeduplicationId` nuevo por envío,
+para que los reenvíos del mismo `event_id` lleguen a la API) y leer `inventory-broker-inventory-events.fifo`
+(su `MessageGroupId` hace de `key`). La API responde en el puerto 8000:
 
 ```bash
 docker compose run --rm contract-tests --api http://host.docker.internal:8000
@@ -384,39 +499,22 @@ docker compose run --rm contract-tests --api http://host.docker.internal:8000
 Conviene correr **un solo** servicio de inventario mientras se prueba: las pruebas leen toda la cola
 `inventory-broker-inventory-events.fifo`.
 
+**Reconstrucción (regla 23).** SQS no permite releer lo consumido: tras borrar la base, el simulador vuelve a
+mandar los eventos y la API los aplica desde cero (catálogo primero). Deja pasar al menos 20 s entre detener la
+API y reenviar: un *long poll* que la API dejó abierto al apagarse puede quedarse con los primeros mensajes, que
+SQS no vuelve a entregar hasta que vence su visibility timeout (60 s), y `compare` lo toma como que ya terminó.
+
 ## Despliegue
 
-La API se despliega en ECS Fargate con un Application Load Balancer, ECR y Terraform. La base de datos y
-las siete colas SQS deben existir en la misma región. ECS y el ALB usan la VPC de RDS y sus subnets públicas
-en al menos dos zonas de disponibilidad. ECS añade una regla PostgreSQL a la security group de RDS; las
-credenciales SQS salen del rol de la tarea y la contraseña de PostgreSQL
-se lee desde Secrets Manager.
+La API se despliega en AWS ECS. La base de datos vive en un RDS compartido y las credenciales de SQS salen
+del rol de la tarea, no de variables de entorno. La imagen debe llevar `contract/schemas` junto a `dist/`
+(la API valida los eventos contra esos archivos). Con SIGTERM la API deja de leer las colas y termina el
+mensaje en curso.
 
-### Preparar AWS y GitHub
+`.env` (`NODE_ENV=dev`) trae placeholders `<...>` para lo que sale de cada deploy: el endpoint y las
+credenciales del RDS, la región y la cuenta de las colas SQS (las URLs ya llevan los nombres de
+`hack-saltillo-broker`), el dominio de CloudFront de la UI en `CORS_ORIGINS` y la URL del agente.
 
-Necesitas AWS CLI con credenciales autorizadas para crear recursos IAM, S3 y Secrets Manager, además de
-GitHub CLI (`gh auth login`) con permiso para administrar variables del repositorio. Desde la raíz del
-repo, corre:
-
-```bash
-AWS_REGION=us-east-1 bash scripts/bootstrap-github-deploy.sh OWNER/REPO
-```
-
-El script crea el bucket S3 versionado y cifrado, el proveedor OIDC y el rol de Actions con confianza
-para pushes y ejecuciones manuales en cualquier rama de ese repo. Usa el subject OIDC inmutable de
-GitHub (IDs de owner y repo). Te pide la configuración de RDS/UI/agente y carga todas las variables que
-consume el workflow. ECS extrae `password` de un secreto JSON; el script lo crea en ese formato si no
-proporcionas el ARN de un secreto existente. Para usar el repo GitHub actual, omite `OWNER/REPO`.
-
-### Desplegar
-
-`deploy.yml` despliega en cada `push` a cualquier rama y también permite `workflow_dispatch`. Corre pruebas,
-crea ECR si hace falta, construye y publica la imagen con un tag único por ejecución y aplica Terraform
-para actualizar ECS. Después del primer despliegue, Terraform imprime la URL con:
-
-```bash
-terraform -chdir=infra output -raw api_url
-```
-
-El ALB queda expuesto por HTTP en el puerto 80; WebSocket usa el mismo host. Para HTTPS se requiere
-añadir un dominio y un certificado ACM.
+La UI en CloudFront es HTTPS, así que la API también debe exponerse por HTTPS: lo normal es un balanceador
+(ALB con certificado de ACM) delante de ECS que reenvía a `PORT`, con `HTTPS_KEY_PATH` y `HTTPS_CERT_PATH`
+vacías. El balanceador debe dejar pasar WebSocket (el ALB lo hace por defecto).

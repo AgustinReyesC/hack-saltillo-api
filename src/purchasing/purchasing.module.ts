@@ -4,11 +4,13 @@ import { LedgerModule } from '../ledger/ledger.module.js';
 import { OutboxModule } from '../outbox/outbox.module.js';
 import { RealtimeModule } from '../realtime/realtime.module.js';
 import { PurchasingController } from './purchasing.controller.js';
+import { PurchasingHandlers } from './purchasing.handlers.js';
 import { PurchasingService } from './purchasing.service.js';
 
 @Module({
   imports: [LedgerModule, OutboxModule, CommitmentsModule, RealtimeModule],
   controllers: [PurchasingController],
-  providers: [PurchasingService],
+  providers: [PurchasingService, PurchasingHandlers],
+  exports: [PurchasingHandlers],
 })
 export class PurchasingModule {}

@@ -23,7 +23,7 @@ interface MaterialRow {
   name: string;
   required: number | null;
   reserved: number;
-  issued: number;
+  fulfilled: number;
 }
 
 @Injectable()
@@ -74,45 +74,78 @@ export class WorkOrdersService {
     };
   }
 
-  // Una línea por `bom_line_id` con necesidad vigente: el último item `buy` de las inspecciones
-  // aprobadas de la orden (API README §7).
+  // Una línea por `bom_line_id` con necesidad vigente (`work_order_need`, que fija cada
+  // aprobación). Entregado = lo que salió contra las reservas de la línea más lo que salió contra
+  // la orden sin reserva (eso se le cuenta a la primera línea de la pieza, porque `movement` no
+  // sabe de líneas). En una orden dada de baja ya no falta nada.
   async materials(code: string) {
     const workOrder = await this.findByCode(code);
     const lines: MaterialRow[] = await this.dataSource.query(
-      `WITH lines AS (
-         SELECT DISTINCT ON (ii.bom_line_id)
-                ii.inspection_item_id, ii.bom_line_id, ii.part_id, ii.name,
-                COALESCE(ii.quantity, ml.qty_per_unit) AS required
-         FROM inspection_item ii
-         JOIN inspection i  ON i.inspection_id = ii.inspection_id
-         JOIN model_line ml ON ml.bom_line_id = ii.bom_line_id
-         WHERE i.work_order_id = $1 AND i.status = 'approved' AND ii.action = 'buy'
-         ORDER BY ii.bom_line_id, i.approved_at DESC NULLS LAST, i.inspection_id DESC
-       )
-       SELECT l.*,
-              (SELECT COALESCE(SUM(r.quantity), 0)::int
-               FROM reservation r
-               JOIN inspection_item ri ON ri.inspection_item_id = r.inspection_item_id
-               WHERE r.work_order_id = $1 AND r.status = 'active'
-                 AND ri.bom_line_id = l.bom_line_id) AS reserved,
-              (SELECT COALESCE(SUM(-m.quantity), 0)::int
-               FROM movement m
-               WHERE m.type = 'issue' AND m.reference = $2 AND m.part_id = l.part_id) AS issued
-       FROM lines l
-       ORDER BY l.bom_line_id`,
-      [workOrder.work_order_id, workOrder.code],
+      `SELECT n.inspection_item_id, n.bom_line_id, n.part_id,
+              COALESCE(ii.name, ml.name) AS name, n.quantity AS required,
+              COALESCE(r.reserved, 0)::int AS reserved,
+              COALESCE(r.fulfilled, 0)::int AS fulfilled
+       FROM work_order_need n
+       JOIN model_line ml ON ml.bom_line_id = n.bom_line_id
+       LEFT JOIN inspection_item ii ON ii.inspection_item_id = n.inspection_item_id
+       LEFT JOIN LATERAL (
+         SELECT SUM(res.quantity) FILTER (WHERE res.status = 'active') AS reserved,
+                SUM(res.quantity) FILTER (WHERE res.status = 'fulfilled') AS fulfilled
+         FROM reservation res
+         JOIN inspection_item ri ON ri.inspection_item_id = res.inspection_item_id
+         WHERE res.work_order_id = n.work_order_id AND ri.bom_line_id = n.bom_line_id
+       ) r ON TRUE
+       WHERE n.work_order_id = $1
+       ORDER BY n.bom_line_id`,
+      [workOrder.work_order_id],
     );
+    // Las salidas viejas (antes de `movement.work_order_id`) se reconocen por `reference`.
+    const issuedRows: { part_id: number; issued: number }[] =
+      await this.dataSource.query(
+        `SELECT part_id, COALESCE(SUM(-quantity), 0)::int AS issued
+         FROM movement
+         WHERE type = 'issue'
+           AND (work_order_id = $1 OR (work_order_id IS NULL AND reference = $2))
+         GROUP BY part_id`,
+        [workOrder.work_order_id, workOrder.code],
+      );
+
+    const unattributed = new Map(
+      issuedRows.map((row) => [row.part_id, row.issued]),
+    );
+    for (const line of lines) {
+      if (line.part_id !== null && unattributed.has(line.part_id)) {
+        unattributed.set(
+          line.part_id,
+          unattributed.get(line.part_id)! - line.fulfilled,
+        );
+      }
+    }
 
     return {
       work_order_id: workOrder.work_order_id,
       code: workOrder.code,
-      lines: lines.map((line) => ({
-        ...line,
-        missing:
-          line.required === null
-            ? null
-            : Math.max(line.required - line.reserved - line.issued, 0),
-      })),
+      deleted: workOrder.deleted,
+      lines: lines.map(({ fulfilled, ...line }) => {
+        const extra =
+          line.part_id === null
+            ? 0
+            : Math.max(unattributed.get(line.part_id) ?? 0, 0);
+        if (line.part_id !== null) {
+          unattributed.delete(line.part_id);
+        }
+        const issued = fulfilled + extra;
+        return {
+          ...line,
+          issued,
+          missing:
+            line.required === null
+              ? null
+              : workOrder.deleted
+                ? 0
+                : Math.max(line.required - line.reserved - issued, 0),
+        };
+      }),
     };
   }
 

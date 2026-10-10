@@ -22,13 +22,16 @@ expone y qué huecos tiene el esquema.
 
 `hack-saltillo-api` es NestJS 12 en ESM (`"type": "module"`: los imports llevan `.js`). Ya tiene
 `ConfigModule` global y TypeORM conectado a Postgres (`synchronize: false`, `autoLoadEntities: true`);
-`main.ts` escucha en `8000` (el puerto de las pruebas de contrato) con CORS solo para `CORS_ORIGIN`.
+`main.ts` escucha HTTP en `8000` (el puerto de las pruebas de contrato) y, con certificado, HTTPS en `8443`
+para el celular; el CORS depende de `NODE_ENV` (`src/common/server-config.ts`).
 Cada script carga su archivo de entorno con `node --env-file`, por eso `ConfigModule` usa `ignoreEnvFile`.
 
 Ya instaladas: `class-validator` + `class-transformer` (`ValidationPipe` global con 422) y
-`@nestjs/websockets` + `@nestjs/platform-socket.io` (WebSocket con la UI, sección 8.3). Dependencias que
-faltan: `@nestjs/microservices` + `@aws-sdk/client-sqs` (consumo, con un transporte propio: Nest no trae uno
-para SQS) y `ajv` + `ajv-formats` para validar el sobre contra los JSON Schema del contrato.
+`@nestjs/websockets` + `@nestjs/platform-socket.io` (WebSocket con la UI, sección 8.3), `@aws-sdk/client-sqs`
+(consumo y publicación) y `ajv` + `ajv-formats` (validan el sobre contra `contract/schemas`, copia del kit). El
+consumo no usa `@nestjs/microservices`: en un `@EventPattern`, Nest atrapa la excepción del handler y el
+transporte no se entera de que falló, y el pipeline necesita saberlo para revertir la transacción y dejar el
+evento pendiente (sección 4). El consumidor es un servicio propio con un despachador por `event_type`.
 
 Comunicación: el **agente** habla con la API por **REST** (HTTP) y la **UI** por **WebSocket** (socket.io en
 el mismo puerto `8000`; la API es el servidor). La autenticación con JWT queda **pospuesta**.
@@ -40,7 +43,8 @@ las mismas llaves; `.env.example` las documenta con placeholders.
 |---|---|---|
 | `NODE_ENV` | `local` | `local` en `.env.local`, `dev` en `.env`. |
 | `PORT` | `8000` | Puerto que usan las pruebas de contrato. |
-| `CORS_ORIGIN` | `http://localhost:5173` | Origen de la UI. Único origen permitido (HTTP y WebSocket). |
+| `CORS_ORIGINS` | (vacío) | Orígenes de la UI (HTTP y WebSocket), separados por coma. En `local` se suman a `localhost` y las IP de la red local; en `dev` es obligatorio (CloudFront). |
+| `HTTPS_PORT` / `HTTPS_KEY_PATH` / `HTTPS_CERT_PATH` | `8443` / `certs/local-key.pem` / `certs/local-cert.pem` | HTTPS para el celular (`npm run cert:local -- <ip>`). Vacías = solo HTTP. |
 | `DATABASE_HOST` / `DATABASE_PORT` | `localhost` / `5432` | En ECS, el endpoint del RDS compartido. |
 | `DATABASE_NAME` / `DATABASE_USER` / `DATABASE_PASSWORD` | `inventario` ×3 | Valores por defecto de `hack-saltillo-db`. |
 | `DATABASE_SSL` | `false` | `true` contra RDS. |
@@ -83,7 +87,7 @@ Módulos sugeridos:
 
 | Módulo | Responsabilidad |
 |---|---|
-| `ingest` | Consumer SQS (transporte propio de `@nestjs/microservices`) de las cinco colas de entrada, validación del sobre, pipeline (sección 4), un handler por `event_type`. |
+| `ingest` | Consumidor SQS de las cinco colas de entrada (`sqs-consumer.ts`), validación del sobre, pipeline (sección 4, `ingest.service.ts`), despachador por `event_type` y publicador de `outbox_event`. Los handlers viven en cada dominio (`catalog`, `work-orders`, `inspections`, `purchasing`). |
 | `ledger` | `movement` y `stock_balance`: única puerta para cambiar existencia. |
 | `commitments` | Reservas, faltantes y sugerencias de reabasto. |
 | `outbox` | Publicador de `outbox_event` y DLQ. |
@@ -275,15 +279,12 @@ Todas dentro de una transacción con los candados de la sección 4.2.
 
 ### 6.1 Saldo
 
-Toda variación de existencia = una fila en `movement` **y** una actualización de `stock_balance` en la
-misma transacción (no hay triggers en la base):
-
-```sql
-INSERT INTO stock_balance (part_id, location_id, on_hand)
-VALUES ($1, $2, $3)
-ON CONFLICT (part_id, location_id)
-DO UPDATE SET on_hand = stock_balance.on_hand + EXCLUDED.on_hand, updated_at = now();
-```
+Toda variación de existencia = una fila en `movement`. Desde la migración 015 de `hack-saltillo-db`,
+`trg_movement_apply_balance` recalcula `stock_balance.on_hand` como la suma de los movimientos de la pieza
+en esa ubicación, y `trg_movement_immutable` prohíbe editar o borrar movimientos. La API **no** escribe
+`on_hand`; solo administra `reserved` (sección 6.7). Cada movimiento lleva su trazabilidad (012):
+`work_order_id` e `issued_by` en las salidas, `purchase_line_id` en las entradas y `transfer_group_id` en las
+dos mitades de una transferencia.
 
 Signo de `movement.quantity`: `receipt` +, `issue` −, `transfer_out` −, `transfer_in` +, `adjustment` = delta
 (CHECK `quantity <> 0`). `available` es columna generada: no se escribe.
@@ -362,10 +363,17 @@ Upsert en `reorder_suggestion` y emitir `stock.reorder_suggested` **solo si nace
 ### 6.7 `stock_balance.reserved` y la ubicación
 
 `reservation` no tiene ubicación, pero `stock_balance.reserved` sí es por `(pieza, ubicación)`, y
-`v_part_availability` **suma** esa columna. Hay que elegir dónde se anota. Recomendación: anotar toda la
-reserva de una pieza en su fila de `location_id = 100`, creándola con `on_hand = 0` si no existe. El
-total de la pieza queda correcto aunque esa fila quede con `available` negativo (no hay CHECK). En la
-API, `locations[].reserved` se reporta en 0 y `available = on_hand` por ubicación, como permite el contrato.
+`v_part_availability` **suma** esa columna. La base exige `reserved <= on_hand` en cada fila cuando
+`reserved` sube (`trg_stock_balance_reserved_guard`, migración 015), así que no se puede anotar todo en
+`U-100`. `LedgerService` reparte:
+
+- `reserve`: entre las filas con existencia libre, primero `U-100` y luego la de más libre. La suma de lo libre
+  por fila nunca es menor que el disponible total, así que siempre cabe lo que se decidió reservar.
+- `release`: primero de las filas con más apartado que existencia y luego de las que más tienen.
+- `rebalance`: después de una salida, transferencia o conteo, mueve lo apartado de más a filas con existencia
+  libre; lo que no quepa (un conteo dejó menos que lo reservado) se queda.
+
+`locations[].reserved` y `available` se reportan con sus valores reales.
 
 ## 7. Rutas del contrato (puerto 8000)
 
@@ -383,7 +391,7 @@ FROM stock_balance b JOIN location l USING (location_id) WHERE b.part_id = $1;
 ```
 
 `{ part_id, on_hand, reserved, available, locations: [{ location_id, code, on_hand, reserved, available }] }`.
-Totales de la raíz desde la vista; por ubicación `reserved = 0` (sección 6.7).
+Totales de la raíz desde la vista; por ubicación, lo apartado y el disponible de cada fila (sección 6.7).
 
 ### `GET /parts/{part_id}/ledger` → 200 `Ledger` / 404
 
@@ -467,7 +475,7 @@ Los nombres exactos son propuesta.
 
 | En "API Design" | Propuesta | Lee / escribe |
 |---|---|---|
-| `GET events` | `GET /events?source=&type=&status=&topic=&limit=` | **Lee** `event_inbox` (`source=inbox`), `outbox_event` (`source=outbox`) y `dead_letter_event` (`source=dlq`). Solo lectura; JWT pospuesto. El consumo de SQS no es una ruta. |
+| `GET events` | `GET /events?origin=&type=&status=&topic=&limit=` | **Lee** `event_inbox` (`origin=inbox`), `outbox_event` (`origin=outbox`) y `dead_letter_event` (`origin=dlq`); cada elemento es el sobre del evento más `origin`, `topic` y `status`. Solo lectura; JWT pospuesto. El consumo de SQS no es una ruta. |
 | (flujos del agente) | `POST /agent/messages` `{message, data?}` → 202 | **No escribe** en la base: reenvía el mensaje a la UI por WebSocket (`agent:message`). |
 | `POST product/ordenCompra` | `POST /purchase-orders` `{supplier_id, currency, expected_at, lines:[{part_id, part_number, quantity, unit_price, purpose, work_order_code?}]}` | **Escribe** `purchase_request`, `purchase_order`, `purchase_line` (sección 8.1). |
 | `PATCH {product id}` | `PATCH /part-instances/{instance_id}` `{condition_code?, location_id?, work_order_id?, serial_number?, note?}` | **Escribe** una unidad física: `part_instance` + `part_status_history` (sección 8.2). |
@@ -525,8 +533,9 @@ VALUES ($part_id, $1, $condition_code, $work_order_id, $note);
 
 ### 8.3 WebSocket con la UI
 
-La API es el servidor (socket.io sobre el mismo servidor HTTP, puerto `8000`, CORS = `CORS_ORIGIN`). La UI
-se conecta con `socket.io-client` (`io("http://localhost:8000")`) y renderiza lo que recibe.
+La API es el servidor (socket.io sobre los mismos servidores que HTTP: `8000` y, con certificado, `8443`; CORS
+según `NODE_ENV`, lo fija `MultiServerIoAdapter`). La UI se conecta con `socket.io-client`
+(`io("http://localhost:8000")`, o `https://<ip-de-la-laptop>:8443` desde el celular) y renderiza lo que recibe.
 
 | Mensaje | Dirección | Contenido | Cuándo |
 |---|---|---|---|
@@ -660,7 +669,7 @@ marcadas **Cambio posible** son propuestas que solo se harían si el equipo lo a
 | No hay tabla de usuarios ni de sesión | El reto pide autenticación; el contrato dice sin autenticación. Quién autoriza/compra no se persiste. | **Pospuesto.** Cuando se retome: guard solo en rutas de extensión, **nunca** en las del contrato (las pruebas no mandan credenciales). |
 | No hay relación proveedor ↔ pieza ni cotizaciones/especificaciones | "Proveedores, fechas y costos" y "el proveedor incluye especificaciones" no tienen fuente. | Derivar de `purchase_order` ↔ `purchase_line` (solo lo creado por la API). **Cambio posible:** tabla `supplier_part` / `quotation`. |
 | `purchase_line.match_status` no tiene valor para `customer_order` | Queda en `pending`, igual que una recepción aún sin procesar. | Distinguir por `purpose`. |
-| `movement` no tiene `work_order_id` | "Entregado" por orden/línea se reconstruye por `reference`. | Guardar el código de orden en `reference` de los `issue`; si dos líneas comparten pieza, `issued` es por pieza. |
+| ~~`movement` no tiene `work_order_id`~~ (resuelto en la migración 012) | `materials` toma lo entregado de las reservas `fulfilled` de cada línea y de `movement.work_order_id`; una salida sin reserva se le cuenta a la primera línea de la pieza. | Las salidas viejas se reconocen por `reference`. Antes: si dos líneas comparten pieza, `issued` es por pieza. |
 | `reservation` no tiene `bom_line_id` ni ubicación | La línea se obtiene por `inspection_item.bom_line_id`; la ubicación de la reserva no existe. | Secciones 6.3 y 6.7. |
 | No hay UNIQUE que impida dos reservas o faltantes abiertos por línea | El invariante "uno por (orden, línea)" lo debe cuidar la app. | Candado de orden + `FOR UPDATE` al reemplazar necesidad. |
 | `event_inbox.status` tiene `DEFAULT 'processed'` | Un insert sin status queda como procesado. | Escribir el status explícito siempre. |
@@ -688,20 +697,21 @@ por eso no se corrigieron en `API Design.md`:
 4. **Faltantes con cantidad desconocida** en la sugerencia de reabasto (`missing_quantity = NULL`): ¿suman 0 o 1?
 5. **Orden de compra de la API vs. recepción del taller.** No hay llave común. Sin ella, el estado de
    `purchase_order` solo cambia a mano (`PATCH`).
-6. **`GET events`** (decidido): consumir eventos es el transporte SQS (`@EventPattern` sobre un transporte
-   propio), no una ruta HTTP. `GET /events` solo **lista** lo ya guardado. La autenticación (JWT) quedó
-   pospuesta hasta que existan las rutas.
+6. **`GET events`** (decidido): consumir eventos es el consumidor SQS en segundo plano (sección 1), no una
+   ruta HTTP. `GET /events` solo **lista** lo ya guardado. La autenticación (JWT) quedó pospuesta.
 7. **Nombre del reto:** el título de `API Design.md` dice "Roceel" y el reto dice "Rossel". No se tocó.
 8. **"Autorizar un nuevo equipo que requiera refacción"** (módulo esperado del reto): en el kit, aprobar una
    inspección lo hace el simulador (`POST /api/inspections/{id}/approve` en `:8090`) y llega como evento;
    la API no genera `inspection.approved`.
-9. **Orden eliminada en `materials`:** el contrato no dice qué responder. Propuesta: 200 con las líneas y `reserved = 0`.
-10. **Eventos de `notifications`:** el mensaje del usuario al agente genera un evento en
-    `inventory-broker-notifications.fifo` y la API decide según su `event_type`. Falta definir los tipos, su
-    `data`, su `key` y qué hace la API con cada uno.
+9. **Orden eliminada en `materials`** (decidido): 200 con sus líneas, `reserved = 0`, `missing = 0` y el
+   campo extra `deleted: true`.
+10. **Eventos de `notifications`:** se aceptan con cualquier `event_type` (solo se valida el sobre), se guardan en
+    `event_inbox`, se mandan a la UI por WebSocket y se reenvían al agente (punto 12). Falta definir sus tipos y
+    su `data` entre UI y agente.
 11. **Alta de unidades y receta de reparación:** sin definir (sección 8).
-12. **Cómo le llega al agente el mensaje del usuario** (flujo 2): la API consume el evento de `notifications`,
-    pero falta definir si la API llama al agente (`AGENT_URL`) o el agente lo consulta.
+12. **Cómo le llega al agente el mensaje del usuario** (decidido): la API le reenvía cada evento de
+    `notifications` con `POST AGENT_URL` (el sobre en JSON), como mejor esfuerzo; el agente responde con
+    `POST /agent/messages`.
 
 ## 14. Pruebas y reconstrucción
 

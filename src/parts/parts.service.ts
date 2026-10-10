@@ -19,7 +19,8 @@ import {
   UpdateReorderPolicyDto,
 } from './dto/update-reorder-policy.dto.js';
 
-const DEFAULT_LIMIT = 100;
+// La UI pide el catálogo completo (búsqueda, existencias): el dataset trae ~260 piezas.
+const DEFAULT_LIMIT = 1000;
 
 // Columnas de `v_part_agent_summary`; los SUM/COUNT se convierten a int en SQL.
 const SUMMARY_COLUMNS = `
@@ -132,26 +133,18 @@ export class PartsService {
     if (!totals) {
       throw new NotFoundException('Part not found');
     }
-    // La reserva se lleva a nivel pieza: por ubicación se reporta en 0 (API README §6.7).
-    const locations: { location_id: number; code: string; on_hand: number }[] =
-      await this.dataSource.query(
-        `SELECT b.location_id, l.code, b.on_hand
-         FROM stock_balance b
-         JOIN location l ON l.location_id = b.location_id
-         WHERE b.part_id = $1 AND b.on_hand <> 0
-         ORDER BY b.location_id`,
-        [partId],
-      );
+    // La reserva se reparte entre las ubicaciones con existencia (`LedgerService.reserve`), así
+    // que cada ubicación reporta lo apartado y el disponible reales.
+    const locations: unknown[] = await this.dataSource.query(
+      `SELECT b.location_id, l.code, b.on_hand, b.reserved, b.available
+       FROM stock_balance b
+       JOIN location l ON l.location_id = b.location_id
+       WHERE b.part_id = $1 AND (b.on_hand <> 0 OR b.reserved <> 0)
+       ORDER BY b.location_id`,
+      [partId],
+    );
 
-    return {
-      part_id: partId,
-      ...totals,
-      locations: locations.map((location) => ({
-        ...location,
-        reserved: 0,
-        available: location.on_hand,
-      })),
-    };
+    return { part_id: partId, ...totals, locations };
   }
 
   async ledgerEntries(partId: number) {
