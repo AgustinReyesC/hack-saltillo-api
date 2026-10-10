@@ -122,7 +122,7 @@ policy="$(jq -n --arg partition "$partition" --arg account "$account_id" --arg r
     {
       Sid: "NetworkingAndQueues",
       Effect: "Allow",
-      Action: ["ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeAvailabilityZones", "ec2:DescribeInternetGateways", "ec2:DescribeAccountAttributes", "ec2:DescribeTags", "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress", "ec2:CreateTags", "ec2:DeleteTags"],
+      Action: ["ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeNetworkInterfaces", "ec2:DescribeAvailabilityZones", "ec2:DescribeInternetGateways", "ec2:DescribeAccountAttributes", "ec2:DescribeTags", "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress", "ec2:CreateTags", "ec2:DeleteTags"],
       Resource: "*"
     },
     {
@@ -155,7 +155,11 @@ policy="$(jq -n --arg partition "$partition" --arg account "$account_id" --arg r
     {
       Effect: "Allow",
       Action: ["iam:CreateServiceLinkedRole"],
-      Resource: ("arn:" + $partition + ":iam::*:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing")
+      Resource: [
+        ("arn:" + $partition + ":iam::*:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS"),
+        ("arn:" + $partition + ":iam::*:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing")
+      ],
+      Condition: { StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com"] } }
     }
   ]
 }')"
