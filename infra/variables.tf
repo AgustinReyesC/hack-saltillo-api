@@ -46,6 +46,12 @@ variable "agent_url" {
   default     = ""
 }
 
+variable "agent_function_name" {
+  description = "Lambda del agente (hack-saltillo-events) que la API invoca para el chat y las notificaciones. Vacía = sin agente."
+  type        = string
+  default     = "hack-saltillo-events-agent"
+}
+
 variable "image_tag" {
   description = "Immutable image tag to deploy."
   type        = string

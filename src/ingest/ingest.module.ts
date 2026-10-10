@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AgentModule } from '../agent/agent.module.js';
 import { CatalogModule } from '../catalog/catalog.module.js';
 import { InspectionsModule } from '../inspections/inspections.module.js';
 import { OutboxModule } from '../outbox/outbox.module.js';
@@ -22,6 +23,7 @@ import { SqsConsumer } from './sqs-consumer.js';
 // Consumo de las colas de entrada, pipeline de eventos y publicación de las colas de salida.
 @Module({
   imports: [
+    AgentModule,
     OutboxModule,
     RealtimeModule,
     CatalogModule,

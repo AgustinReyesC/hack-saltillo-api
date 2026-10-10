@@ -55,7 +55,7 @@ locals {
   container_environment = [
     { name = "NODE_ENV", value = "dev" },
     { name = "PORT", value = "8000" },
-    { name = "CORS_ORIGIN", value = var.cors_origin },
+    { name = "CORS_ORIGINS", value = var.cors_origin },
     { name = "DATABASE_HOST", value = var.database_host },
     { name = "DATABASE_PORT", value = tostring(var.database_port) },
     { name = "DATABASE_NAME", value = var.database_name },
@@ -63,6 +63,7 @@ locals {
     { name = "DATABASE_SSL", value = "true" },
     { name = "AWS_REGION", value = var.aws_region },
     { name = "AGENT_URL", value = var.agent_url },
+    { name = "AGENT_FUNCTION_NAME", value = var.agent_function_name },
     { name = "SQS_SHOP_CATALOG_URL", value = data.aws_sqs_queue.api["inventory-broker-shop-catalog.fifo"].url },
     { name = "SQS_SHOP_WORK_ORDERS_URL", value = data.aws_sqs_queue.api["inventory-broker-shop-work-orders.fifo"].url },
     { name = "SQS_SHOP_INSPECTIONS_URL", value = data.aws_sqs_queue.api["inventory-broker-shop-inspections.fifo"].url },
@@ -148,6 +149,23 @@ resource "aws_iam_role_policy" "task_sqs" {
         "sqs:SendMessage",
       ]
       Resource = [for queue in data.aws_sqs_queue.api : queue.arn]
+    }]
+  })
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role_policy" "task_agent" {
+  count = var.agent_function_name == "" ? 0 : 1
+  name  = "invoke-agent-lambda"
+  role  = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.agent_function_name}"
     }]
   })
 }

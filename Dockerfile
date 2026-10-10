@@ -13,6 +13,8 @@ ENV NODE_ENV=dev PORT=8000 DATABASE_SSL_CA_PATH=/app/rds-global-bundle.pem
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+# El validador de eventos lee los JSON Schema del contrato desde `dist/../contract/schemas`.
+COPY --from=build --chown=node:node /app/contract ./contract
 COPY --from=build --chown=node:node /app/rds-global-bundle.pem ./rds-global-bundle.pem
 USER node
 EXPOSE 8000
