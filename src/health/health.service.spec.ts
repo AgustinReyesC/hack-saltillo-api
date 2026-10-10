@@ -18,7 +18,7 @@ describe('HealthService', () => {
 
   it('devuelve los eventos pendientes y sin publicar', async () => {
     dataSource.query.mockResolvedValue([
-      { pending_events: 2, unpublished_events: 5 },
+      { pending_events: 2, unpublished_events: 5, dead_events: 1 },
     ]);
 
     await expect(service.check()).resolves.toEqual({
@@ -26,6 +26,7 @@ describe('HealthService', () => {
       database: 'up',
       pending_events: 2,
       unpublished_events: 5,
+      dead_events: 1,
     });
   });
 

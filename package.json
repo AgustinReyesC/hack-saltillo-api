@@ -8,6 +8,7 @@
   "type": "module",
   "scripts": {
     "build": "nest build",
+    "cert:local": "node -e \"require('node:fs').mkdirSync('certs', { recursive: true })\" && mkcert -key-file certs/local-key.pem -cert-file certs/local-cert.pem localhost 127.0.0.1 ::1",
     "deploy": "nest deploy",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start --exec \"node --env-file=.env.local\"",
@@ -22,6 +23,7 @@
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1149.0",
     "@nestjs/common": "^12.0.1",
     "@nestjs/config": "^12.0.1",
     "@nestjs/core": "^12.0.1",
@@ -29,8 +31,11 @@
     "@nestjs/platform-socket.io": "^12.1.2",
     "@nestjs/typeorm": "^12.0.2",
     "@nestjs/websockets": "^12.1.2",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "mkcert": "^3.2.0",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",

@@ -1,12 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { MovementRow } from '../common/serialization.js';
 
-// Ubicación de recepción U-100: ahí entran las compras y ahí se anota toda la reserva de una pieza.
+// Ubicación de recepción U-100: ahí entran las compras.
 export const RECEIVING_LOCATION_ID = 100;
 
-// Espacio de llaves de `pg_advisory_xact_lock(int, int)` para no chocar con otros candados.
+// Espacios de llaves de `pg_advisory_xact_lock(int, int)` para no chocar con otros candados
+// (el 2 lo usa compras para asignar ids).
 const PART_LOCK = 1;
+const WORK_ORDER_LOCK = 3;
 
 export type MovementType =
   'receipt' | 'issue' | 'transfer_out' | 'transfer_in' | 'adjustment';
@@ -21,12 +23,27 @@ export interface NewMovement {
   occurredAt?: Date | string;
   unitCost?: string | null;
   currency?: string | null;
+  // Trazabilidad (hack-saltillo-db 012): de dónde sale cada evento de salida.
+  workOrderId?: number | null;
+  issuedBy?: string | null;
+  purchaseLineId?: number | null;
+  transferGroupId?: string | null;
 }
 
-// Única puerta para cambiar existencias: cada variación es un `movement` y su `stock_balance`.
+interface BalanceRow {
+  location_id: number;
+  on_hand: number;
+  reserved: number;
+}
+
+// Única puerta para cambiar existencias. `stock_balance.on_hand` lo recalcula el trigger
+// `trg_movement_apply_balance` con cada `movement`; la API solo administra `reserved`.
 @Injectable()
 export class LedgerService {
-  // Candados por pieza, en orden ascendente para evitar deadlocks. Duran hasta el COMMIT.
+  private readonly logger = new Logger(LedgerService.name);
+
+  // Candados por pieza, en orden ascendente para evitar deadlocks. Duran hasta el COMMIT. Quien
+  // toque reservas o faltantes de una pieza los toma antes que cualquier otro candado.
   async lockParts(manager: EntityManager, partIds: number[]): Promise<void> {
     const ids = [...new Set(partIds)].sort((a, b) => a - b);
     for (const id of ids) {
@@ -37,14 +54,26 @@ export class LedgerService {
     }
   }
 
+  // Candado de una orden de trabajo; siempre después de los de pieza.
+  async lockWorkOrder(
+    manager: EntityManager,
+    workOrderId: number,
+  ): Promise<void> {
+    await manager.query('SELECT pg_advisory_xact_lock($1, $2)', [
+      WORK_ORDER_LOCK,
+      workOrderId,
+    ]);
+  }
+
   async addMovement(
     manager: EntityManager,
     movement: NewMovement,
   ): Promise<MovementRow> {
     const [row]: MovementRow[] = await manager.query(
       `INSERT INTO movement
-         (type, part_id, location_id, quantity, unit_cost, currency, reference, occurred_at, event_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, now()), $9)
+         (type, part_id, location_id, quantity, unit_cost, currency, reference, occurred_at,
+          event_id, work_order_id, issued_by, purchase_line_id, transfer_group_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, now()), $9, $10, $11, $12, $13)
        RETURNING movement_id, type, part_id, location_id, quantity, occurred_at, reference`,
       [
         movement.type,
@@ -56,34 +85,141 @@ export class LedgerService {
         movement.reference,
         movement.occurredAt ?? null,
         movement.eventId,
+        movement.workOrderId ?? null,
+        movement.issuedBy ?? null,
+        movement.purchaseLineId ?? null,
+        movement.transferGroupId ?? null,
       ],
-    );
-    await manager.query(
-      `INSERT INTO stock_balance (part_id, location_id, on_hand)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (part_id, location_id)
-       DO UPDATE SET on_hand = stock_balance.on_hand + EXCLUDED.on_hand, updated_at = now()`,
-      [movement.partId, movement.locationId, movement.quantity],
     );
     return row;
   }
 
-  // La reserva no tiene ubicación: se anota en la fila de U-100 de la pieza (API README §6.7).
-  async addReserved(
+  // Aparta `quantity` de la pieza. La reserva es de la pieza, no de una ubicación, pero la base
+  // exige `reserved <= on_hand` en cada fila de `stock_balance` (trigger
+  // `trg_stock_balance_reserved_guard`): se reparte entre las ubicaciones con existencia libre,
+  // primero U-100 y luego la de más libre. Quien llama ya comprobó el disponible con la pieza
+  // candada, y la suma de lo libre por fila nunca es menor que el disponible total.
+  async reserve(
     manager: EntityManager,
     partId: number,
-    delta: number,
+    quantity: number,
   ): Promise<void> {
-    if (delta === 0) {
+    if (quantity <= 0) {
       return;
     }
-    await manager.query(
-      `INSERT INTO stock_balance (part_id, location_id, on_hand, reserved)
-       VALUES ($1, $2, 0, $3)
-       ON CONFLICT (part_id, location_id)
-       DO UPDATE SET reserved = stock_balance.reserved + EXCLUDED.reserved, updated_at = now()`,
-      [partId, RECEIVING_LOCATION_ID, delta],
+    const rows = (await this.balances(manager, partId))
+      .filter((row) => row.on_hand > row.reserved)
+      .sort(
+        (a, b) =>
+          Number(b.location_id === RECEIVING_LOCATION_ID) -
+            Number(a.location_id === RECEIVING_LOCATION_ID) ||
+          b.on_hand - b.reserved - (a.on_hand - a.reserved) ||
+          a.location_id - b.location_id,
+      );
+
+    let remaining = quantity;
+    for (const row of rows) {
+      const take = Math.min(remaining, row.on_hand - row.reserved);
+      await this.setReserved(
+        manager,
+        partId,
+        row.location_id,
+        row.reserved + take,
+      );
+      remaining -= take;
+      if (remaining === 0) {
+        return;
+      }
+    }
+    throw new Error(
+      `No hay existencia libre para reservar ${quantity} de la pieza ${partId}`,
     );
+  }
+
+  // Devuelve `quantity` apartada de la pieza: primero de las filas que tienen más apartado que
+  // existencia (después de una salida o un conteo), luego de las que más tienen.
+  async release(
+    manager: EntityManager,
+    partId: number,
+    quantity: number,
+  ): Promise<void> {
+    if (quantity <= 0) {
+      return;
+    }
+    const rows = (await this.balances(manager, partId))
+      .filter((row) => row.reserved > 0)
+      .sort(
+        (a, b) =>
+          b.reserved - b.on_hand - (a.reserved - a.on_hand) ||
+          b.reserved - a.reserved,
+      );
+
+    let remaining = quantity;
+    for (const row of rows) {
+      const take = Math.min(remaining, row.reserved);
+      await this.setReserved(
+        manager,
+        partId,
+        row.location_id,
+        row.reserved - take,
+      );
+      remaining -= take;
+      if (remaining === 0) {
+        return;
+      }
+    }
+    // La suma de `reserved` es la proyección de las reservas activas: si no alcanza, la
+    // proyección ya venía mal. Se libera lo que hay en lugar de tumbar el evento.
+    this.logger.warn(
+      `Se liberaron ${quantity - remaining} de ${quantity} apartadas de la pieza ${partId}: no había más en stock_balance`,
+    );
+  }
+
+  // Tras bajar la existencia de una ubicación (salida, transferencia o conteo), mueve lo
+  // apartado de más a ubicaciones con existencia libre, para que cada ubicación muestre un
+  // disponible real. Lo que no quepa en ninguna (el conteo dejó menos que lo reservado) se queda.
+  async rebalance(manager: EntityManager, partId: number): Promise<void> {
+    const rows = await this.balances(manager, partId);
+    const over = rows.filter((row) => row.reserved > Math.max(row.on_hand, 0));
+    const free = rows.filter((row) => row.on_hand > row.reserved);
+    if (over.length === 0 || free.length === 0) {
+      return;
+    }
+
+    const target = new Map(rows.map((row) => [row.location_id, row.reserved]));
+    for (const from of over) {
+      let excess = from.reserved - Math.max(from.on_hand, 0);
+      for (const to of free) {
+        const room = to.on_hand - target.get(to.location_id)!;
+        const take = Math.min(excess, room);
+        if (take <= 0) {
+          continue;
+        }
+        target.set(to.location_id, target.get(to.location_id)! + take);
+        target.set(from.location_id, target.get(from.location_id)! - take);
+        excess -= take;
+        if (excess === 0) {
+          break;
+        }
+      }
+    }
+    // Primero las bajas y luego las subidas: así ninguna fila supera su existencia en el camino.
+    const changes = rows
+      .filter((row) => target.get(row.location_id) !== row.reserved)
+      .sort(
+        (a, b) =>
+          target.get(a.location_id)! -
+          a.reserved -
+          (target.get(b.location_id)! - b.reserved),
+      );
+    for (const row of changes) {
+      await this.setReserved(
+        manager,
+        partId,
+        row.location_id,
+        target.get(row.location_id)!,
+      );
+    }
   }
 
   async onHandAt(
@@ -138,5 +274,29 @@ export class LedgerService {
     if (rows.length === 0) {
       throw new NotFoundException(`Location ${locationId} not found`);
     }
+  }
+
+  private async balances(
+    manager: EntityManager,
+    partId: number,
+  ): Promise<BalanceRow[]> {
+    return manager.query(
+      `SELECT location_id, on_hand, reserved FROM stock_balance
+       WHERE part_id = $1 ORDER BY location_id FOR UPDATE`,
+      [partId],
+    );
+  }
+
+  private async setReserved(
+    manager: EntityManager,
+    partId: number,
+    locationId: number,
+    reserved: number,
+  ): Promise<void> {
+    await manager.query(
+      `UPDATE stock_balance SET reserved = $3, updated_at = now()
+       WHERE part_id = $1 AND location_id = $2`,
+      [partId, locationId, reserved],
+    );
   }
 }

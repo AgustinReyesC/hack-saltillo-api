@@ -13,9 +13,10 @@ export interface AgentMessage {
   received_at: string;
 }
 
-// Servidor de WebSocket con la UI (socket.io, mismo puerto que HTTP). Este gateway solo emite;
-// los mensajes que manda la UI los atienden los gateways de cada módulo (p. ej. `parts:list`).
-@WebSocketGateway({ cors: { origin: process.env.CORS_ORIGIN } })
+// Servidor de WebSocket con la UI (socket.io, mismos puertos que HTTP y HTTPS). Este gateway solo
+// emite; los mensajes que manda la UI los atienden los gateways de cada módulo (p. ej. `parts:list`).
+// El CORS y los servidores los fija `MultiServerIoAdapter` en main.ts.
+@WebSocketGateway()
 export class RealtimeGateway implements OnGatewayConnection {
   private readonly logger = new Logger(RealtimeGateway.name);
 

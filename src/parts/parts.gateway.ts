@@ -8,8 +8,9 @@ import {
 import { PartsQueryDto } from './dto/parts-query.dto.js';
 import { PartsService } from './parts.service.js';
 
-// La UI pide los productos por WebSocket; la respuesta llega en el ack del mensaje.
-@WebSocketGateway({ cors: { origin: process.env.CORS_ORIGIN } })
+// La UI pide los productos por WebSocket; la respuesta llega en el ack del mensaje. El CORS lo fija
+// `MultiServerIoAdapter` en main.ts.
+@WebSocketGateway()
 export class PartsGateway {
   constructor(private readonly partsService: PartsService) {}
 

@@ -7,10 +7,13 @@ import { CommitmentsModule } from './commitments/commitments.module.js';
 import { DetailExceptionFilter } from './common/filters/detail-exception.filter.js';
 import { EventsModule } from './events/events.module.js';
 import { HealthModule } from './health/health.module.js';
+import { IngestModule } from './ingest/ingest.module.js';
 import { InventoryModule } from './inventory/inventory.module.js';
+import { LocationsModule } from './locations/locations.module.js';
 import { PartInstancesModule } from './part-instances/part-instances.module.js';
 import { PartsModule } from './parts/parts.module.js';
 import { PurchasingModule } from './purchasing/purchasing.module.js';
+import { ScanModule } from './scan/scan.module.js';
 import { WorkOrdersModule } from './work-orders/work-orders.module.js';
 
 @Module({
@@ -39,8 +42,11 @@ import { WorkOrdersModule } from './work-orders/work-orders.module.js';
     CommitmentsModule,
     InventoryModule,
     PurchasingModule,
+    LocationsModule,
+    ScanModule,
     EventsModule,
     AgentModule,
+    IngestModule,
   ],
   providers: [
     // Globales vía DI (no en main.ts) para que también apliquen en las pruebas e2e.

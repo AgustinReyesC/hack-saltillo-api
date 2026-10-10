@@ -96,6 +96,11 @@ export async function removeFixtures(db: DataSource): Promise<void> {
   await db.query('DELETE FROM outbox_event WHERE event_key = ANY($1)', [
     TEST_KEYS,
   ]);
+  // Antes que compras y órdenes: los movimientos las referencian (hack-saltillo-db 012).
+  await deleteMovements(db, 'part_id = $1 OR work_order_id = $2', [
+    TEST_PART,
+    TEST_WORK_ORDER,
+  ]);
   await db.query('DELETE FROM reorder_suggestion WHERE part_id = $1', [
     TEST_PART,
   ]);
@@ -122,7 +127,9 @@ export async function removeFixtures(db: DataSource): Promise<void> {
     'DELETE FROM purchase_request WHERE purchase_request_id = ANY($1::int[])',
     [requestIds],
   );
-  await db.query('DELETE FROM movement WHERE part_id = $1', [TEST_PART]);
+  await db.query('DELETE FROM work_order_need WHERE work_order_id = $1', [
+    TEST_WORK_ORDER,
+  ]);
   await db.query('DELETE FROM stock_balance WHERE part_id = $1', [TEST_PART]);
   await db.query('DELETE FROM inspection_item WHERE inspection_item_id = $1', [
     TEST_INSPECTION_ITEM,
@@ -134,6 +141,25 @@ export async function removeFixtures(db: DataSource): Promise<void> {
     TEST_WORK_ORDER,
   ]);
   await db.query('DELETE FROM part WHERE part_id = $1', [TEST_PART]);
+}
+
+// `movement` es inmutable (trigger `trg_movement_immutable`, hack-saltillo-db 015). Las pruebas
+// limpian lo suyo apagando el trigger solo dentro de su transacción (lo permite el dueño de la
+// tabla); para el resto de la base el libro mayor sigue sin poder editarse.
+export async function deleteMovements(
+  db: DataSource,
+  where: string,
+  params: unknown[],
+): Promise<void> {
+  await db.transaction(async (manager) => {
+    await manager.query(
+      'ALTER TABLE movement DISABLE TRIGGER trg_movement_immutable',
+    );
+    await manager.query(`DELETE FROM movement WHERE ${where}`, params);
+    await manager.query(
+      'ALTER TABLE movement ENABLE TRIGGER trg_movement_immutable',
+    );
+  });
 }
 
 export async function hasPartInstances(db: DataSource): Promise<boolean> {

@@ -5,7 +5,12 @@ import {
 } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 import { CommitmentsService } from '../commitments/commitments.service.js';
-import { toInt, toIso, toMovement } from '../common/serialization.js';
+import {
+  MovementRow,
+  toInt,
+  toIso,
+  toMovement,
+} from '../common/serialization.js';
 import {
   LedgerService,
   RECEIVING_LOCATION_ID,
@@ -20,6 +25,19 @@ import { ResolveReceiptDto } from './dto/resolve-receipt.dto.js';
 // chocar con los ids del taller ni con los de las pruebas de contrato (API README §12).
 const API_ID_START = 1_500_000_000;
 const ID_LOCK = [2, 1] as const;
+
+export interface ReceiptEntry {
+  partId: number;
+  locationId: number;
+  quantity: number;
+  unitCost: string;
+  currency: string;
+  purchaseLineId: number;
+  // null = ahora.
+  receivedAt: Date | string | null;
+  // Orden de la compra: sus faltantes se surten primero.
+  workOrderCode: string | null;
+}
 
 interface ReceiptRow {
   id: string;
@@ -66,6 +84,56 @@ export class PurchasingService {
     };
   }
 
+  // Entrada de una compra (reglas 11 y 12): movimiento `receipt`, `stock.received`, surte los
+  // faltantes de la pieza (primero los de la orden de la compra) y recalcula su sugerencia. La
+  // usan `purchase.item_received` y el `resolve` manual.
+  async registerReceipt(
+    manager: EntityManager,
+    receipt: ReceiptEntry,
+  ): Promise<{ movement: MovementRow; events: EventEnvelope[] }> {
+    await this.ledger.assertLocationExists(manager, receipt.locationId);
+    await this.ledger.lockParts(manager, [receipt.partId]);
+
+    const event = this.outbox.build(
+      'stock.received',
+      `part:${receipt.partId}`,
+      {
+        part_id: receipt.partId,
+        location_id: receipt.locationId,
+        quantity: receipt.quantity,
+        unit_cost: receipt.unitCost,
+        currency: receipt.currency,
+        purchase_line_id: receipt.purchaseLineId,
+      },
+    );
+    const movement = await this.ledger.addMovement(manager, {
+      type: 'receipt',
+      partId: receipt.partId,
+      locationId: receipt.locationId,
+      quantity: receipt.quantity,
+      unitCost: receipt.unitCost,
+      currency: receipt.currency,
+      reference: `purchase_line:${receipt.purchaseLineId}`,
+      occurredAt: receipt.receivedAt ?? undefined,
+      eventId: event.event_id,
+      purchaseLineId: receipt.purchaseLineId,
+    });
+    await this.outbox.save(manager, event);
+
+    const events: EventEnvelope[] = [
+      event,
+      ...(await this.commitments.fillShortages(
+        manager,
+        receipt.partId,
+        receipt.workOrderCode,
+      )),
+      ...(await this.commitments.recomputeSuggestions(manager, [
+        receipt.partId,
+      ])),
+    ];
+    return { movement, events };
+  }
+
   // Relaciona a mano una recepción: registra la entrada como si hubiera coincidido desde el
   // principio (emite `stock.received`) y surte los faltantes de la pieza.
   async resolveReceipt(receiptId: number, dto: ResolveReceiptDto) {
@@ -86,38 +154,26 @@ export class PurchasingService {
       }
       const locationId = dto.location_id ?? RECEIVING_LOCATION_ID;
       await this.ledger.assertPartsExist(manager, [dto.part_id]);
-      await this.ledger.assertLocationExists(manager, locationId);
-      await this.ledger.lockParts(manager, [dto.part_id]);
 
       const [line]: { unit_price: string; currency: string }[] =
         await manager.query(
           'SELECT unit_price::text, currency FROM purchase_line WHERE line_id = $1',
           [receipt.purchase_line_id],
         );
-      const unitCost = line?.unit_price ?? receipt.unit_price ?? '0.00';
-      const currency = line?.currency ?? receipt.currency ?? 'MXN';
-
-      const event = this.outbox.build('stock.received', `part:${dto.part_id}`, {
-        part_id: dto.part_id,
-        location_id: locationId,
-        quantity: receipt.quantity,
-        unit_cost: unitCost,
-        currency,
-        purchase_line_id: receipt.purchase_line_id,
-      });
-      const row = await this.ledger.addMovement(manager, {
-        type: 'receipt',
-        partId: dto.part_id,
-        locationId,
-        quantity: receipt.quantity,
-        unitCost,
-        currency,
-        reference: `purchase_line:${receipt.purchase_line_id}`,
-        occurredAt: receipt.received_at,
-        eventId: event.event_id,
-      });
-      await this.outbox.save(manager, event);
-      events.push(event);
+      // La entrada se fecha al resolverla: así queda al final del kardex, que es cuando el
+      // material quedó disponible.
+      const { movement: row, events: receiptEvents } =
+        await this.registerReceipt(manager, {
+          partId: dto.part_id,
+          locationId,
+          quantity: receipt.quantity,
+          unitCost: line?.unit_price ?? receipt.unit_price ?? '0.00',
+          currency: line?.currency ?? receipt.currency ?? 'MXN',
+          purchaseLineId: receipt.purchase_line_id,
+          receivedAt: null,
+          workOrderCode: receipt.work_order_code,
+        });
+      events.push(...receiptEvents);
 
       await manager.query(
         `UPDATE unmatched_receipt
@@ -132,21 +188,6 @@ export class PurchasingService {
          WHERE line_id = $1`,
         [receipt.purchase_line_id, dto.part_id],
       );
-
-      events.push(
-        ...(await this.commitments.fillShortages(
-          manager,
-          dto.part_id,
-          receipt.work_order_code,
-        )),
-      );
-      const suggestion = await this.commitments.recomputeSuggestion(
-        manager,
-        dto.part_id,
-      );
-      if (suggestion) {
-        events.push(suggestion);
-      }
       return toMovement(row);
     });
 

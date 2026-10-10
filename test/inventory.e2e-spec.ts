@@ -471,7 +471,7 @@ describe('Inventario (e2e)', () => {
   describe('GET /events', () => {
     it('lista los eventos generados en outbox_event', async () => {
       const res = await http()
-        .get('/events?source=outbox&status=pending&limit=500')
+        .get('/events?origin=outbox&status=pending&limit=500')
         .expect(200);
 
       const types = res.body.items
